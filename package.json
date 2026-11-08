@@ -1,0 +1,25 @@
+{
+  "name": "claude-orchestration",
+  "version": "1.0.3",
+  "description": "Installs a multi-agent orchestration setup for Claude Code into ~/.claude",
+  "private": true,
+  "bin": {
+    "claude-orchestration": "bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "agents/",
+    "hooks/",
+    "skills/",
+    "third_party/",
+    "tests/",
+    "CLAUDE.md",
+    "ORCHESTRATION.md",
+    "README.md",
+    "install.sh",
+    "settings.managed.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
