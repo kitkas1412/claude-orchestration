@@ -28,6 +28,10 @@ The safety hooks block direct edits to `~/.claude`, so changes flow one way. Lin
 3. Run `bash install.sh --dry-run`, then `bash install.sh`.
 4. Commit, and add an entry to the changelog in `ORCHESTRATION.md`.
 
+## Optional browser verification
+
+The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it the agent reports that the UI was not rendered.
+
 ## Optional git automation
 
 Off by default. The level is per repository and is stored in `~/.claude/git-publish.registry`: `commit`, `push`, `pr` or `merge`, each including the previous. Project files can never grant a level. Only you register a level, with `enable` in your own terminal (the script asks for a TTY and for the repo name; the guards are best-effort and only block common ways for an agent to run it):

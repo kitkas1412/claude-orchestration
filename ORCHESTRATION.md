@@ -78,6 +78,7 @@ Agents with an explicit `tools` list have no Skill tool, so `skills:` preloads t
 | threejs-web | custom 1.0.0 | ui-ux-engineer, read on demand by path | 2026-11-09 |
 | css-motion | custom 1.0.0 | ui-ux-engineer, read on demand by path | 2026-11-09 |
 | gsap-threejs | custom 1.0.0 | ui-ux-engineer, read on demand by path, with the two above | 2026-11-09 |
+| browser-verification | custom 1.0.0; needs the optional `playwright-cli` (`brew install playwright-cli`, then `brew pin playwright-cli`), installed by the user, not by `install.sh` | ui-ux-engineer, read on demand by path when `playwright-cli` exists | 2026-11-09 |
 | gsap-core, gsap-timeline, gsap-scrolltrigger, gsap-plugins, gsap-performance, gsap-react | greensock/gsap-skills@aed9cfd (MIT, vendored; does not auto-update) | ui-ux-engineer, through `gsap-web` | 2026-11-09 |
 | threejs-fundamentals, threejs-performance, threejs-loaders, threejs-react-three-fiber, threejs-shaders, threejs-postprocessing, threejs-materials, threejs-textures, threejs-lighting, threejs-animation, threejs-interaction, threejs-geometry | CloudAI-X/threejs-skills@0e18186 (MIT, vendored; does not auto-update) | ui-ux-engineer, through `threejs-web` | 2026-11-09 |
 
@@ -133,6 +134,10 @@ Skill vetting, 2026-11-08:
 To change this setup, edit the `claude-orchestration` repository and run `install.sh` yourself.
 
 ## Changelog
+
+### 1.3.0 - 2026-11-09
+
+- Added the custom `browser-verification` skill: when the optional `playwright-cli` is installed (by the user: `brew install playwright-cli`, then `brew pin playwright-cli`; `install.sh` does not install it), `ui-ux-engineer` reads it by path to check a locally served page through Bash: desktop and phone screenshots viewed with Read, console errors, reduced-motion emulation, WebGL renderer and a rough rAF sample. Local origins only, output outside the project tree, no persistent profile. Without the CLI the agent reports that the UI was not rendered. The motion skills now say visual quality and frame rate stay unverified unless it was run.
 
 ### 1.2.0 - 2026-11-09
 

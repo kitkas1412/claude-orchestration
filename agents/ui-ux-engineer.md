@@ -18,7 +18,7 @@ Rules:
 - Always handle the real states: loading, empty, error, disabled, long text, and offline where relevant.
 - Accessibility is required: semantic elements, labels, keyboard operation, visible focus, sufficient contrast, ARIA only when native elements are not enough, reduced-motion respect. For mobile, respect platform conventions, touch target sizes, and dynamic text sizing.
 - Responsive behavior must be considered for the project's target breakpoints/devices.
-- You cannot see the rendered UI unless a browser/preview tool is provided. Do not claim visual correctness; run the available build, type-check, lint, and component tests, and list what a human should check visually.
+- When `command -v playwright-cli` succeeds and the page can be served locally, read `<HOME>/.claude/skills/browser-verification/SKILL.md` (after `echo "$HOME"`) and follow it to look at the rendered page. Otherwise you cannot see the rendered UI unless a browser/preview tool is provided. Do not claim visual correctness; run the available build, type-check, lint, and component tests, and list what a human should check visually.
 
 Motion and 3D (pages with animation or 3D only):
 

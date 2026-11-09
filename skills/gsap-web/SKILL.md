@@ -26,7 +26,7 @@ Vendored skills live in `<HOME>/.claude/skills/<skill-name>/SKILL.md`. Read and 
 4. Create ScrollTriggers after layout is final. Call `ScrollTrigger.refresh()` after fonts (`document.fonts.ready`), DOM images and any other late layout change (injected content, accordions, lazy media). Viewport resize already triggers a debounced refresh. Remove `markers` before shipping.
 5. Teardown: revert the `gsap.context()` or the `matchMedia()` (or rely on `useGSAP` cleanup in React) so its tweens and ScrollTriggers are killed. Kill ScrollTriggers created outside any context by hand (`ScrollTrigger.getById(id)?.kill()` or `getAll()`), and revert plugin instances such as SplitText.
 6. Prefer transforms and opacity, put a ScrollTrigger on the timeline or a top-level tween (not on a child), and use `scrub` or `toggleActions`, not both.
-7. Run the project's build, type-check and lint. Report that visual quality and frame rate were not verified.
+7. Run the project's build, type-check and lint. Report that visual quality and frame rate were not verified unless `browser-verification` was run; how motion feels and real-phone performance remain a human check.
 
 ## Checklist
 
