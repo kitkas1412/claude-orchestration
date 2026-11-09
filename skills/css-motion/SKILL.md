@@ -21,7 +21,7 @@ Plain CSS is the lightest option and the default choice for transitions, hover a
    - Scroll-driven animation: the static end state is the default (elements visible) and the animation sits inside `@supports`. MDN's module page uses `@supports not (scroll-timeline: --main-timeline)`; `(animation-timeline: scroll())` follows the generic syntax but I did not see it quoted.
    - `allow-discrete`: write the `transition` shorthand twice, first without and then with `allow-discrete` (MDN).
    - `@starting-style` missing: the element just appears, without the entry transition.
-6. Run the project's build, type-check and lint. Report that visual quality and smoothness were not verified.
+6. Run the project's build, type-check and lint. Report that visual quality and smoothness were not verified unless `browser-verification` was run; how motion feels and real-phone performance remain a human check.
 
 ## Support, as checked 2026-11-09
 
