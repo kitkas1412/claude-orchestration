@@ -1,6 +1,6 @@
 # Claude Code Orchestration
 
-Portable user-level setup for Claude Code: an orchestrator, 17 specialist subagents, skills, safety hooks and settings. This repository is the source of truth, and `install.sh` copies it into `~/.claude`.
+Portable user-level setup for Claude Code: an orchestrator, 19 specialist subagents, skills, safety hooks and settings. This repository is the source of truth, and `install.sh` copies it into `~/.claude`.
 
 See [ORCHESTRATION.md](ORCHESTRATION.md) for routing, the roster and the skills registry.
 
@@ -85,6 +85,8 @@ Values in `settings.managed.json` win. Other settings on the machine stay. `perm
 | `multi-stage-dockerfile` | `github/awesome-copilot` | `caab1f6` | MIT |
 | `java-junit` | `github/awesome-copilot` | `52a5840` | MIT |
 | `swift-testing-pro` | `twostraws/swift-testing-agent-skill` | `2d6bba1` | MIT |
+| `gsap-core`, `gsap-timeline`, `gsap-scrolltrigger`, `gsap-plugins`, `gsap-performance`, `gsap-react` | `greensock/gsap-skills` | `aed9cfd` | MIT |
+| `threejs-fundamentals`, `threejs-performance`, `threejs-loaders`, `threejs-react-three-fiber`, `threejs-shaders`, `threejs-postprocessing`, `threejs-materials`, `threejs-textures`, `threejs-lighting`, `threejs-animation`, `threejs-interaction`, `threejs-geometry` | `CloudAI-X/threejs-skills` | `0e18186` | MIT |
 
 These are exact copies of the reviewed text. Review an upstream change before replacing a file here. `apple-design` is cloned at a pinned commit and is not stored in this repository.
 

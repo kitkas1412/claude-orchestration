@@ -8,6 +8,7 @@ User-level multi-agent setup. Claude Code 2.1.319. Permission mode: `auto`.
 | --- | --- |
 | A session dedicated to orchestration | `claude --agent orchestrator` |
 | Orchestrate one task in a normal session | `/orchestrate <task>` |
+| Learn a subject in a live dialogue | `claude --agent teacher` |
 | Onboard a repository | `/init-project-orchestration [path]` |
 
 The protocol lives only in `agents/orchestrator.md`. Do not copy it into `CLAUDE.md`, which loads into every subagent.
@@ -33,6 +34,7 @@ Escalation is haiku, then sonnet, then opus, up to 3 attempts per work unit. A h
 | explorer | haiku | read-only |
 | researcher | sonnet | read-only + web |
 | skill-scout | sonnet | read-only + web; recommends skills, never installs |
+| teacher | sonnet | read + web; Write only under ~/learning/ |
 | architect | opus | read-only |
 | implementer | sonnet | edit + Bash |
 | quick-fixer | haiku | edit, no Bash |
@@ -63,6 +65,7 @@ Agents with an explicit `tools` list have no Skill tool, so `skills:` preloads t
 | docs-writing | custom 1.0.0 | doc-writer | 2026-11-08 |
 | git-workflow | custom 1.0.0 | release-manager | 2026-11-09 |
 | ui-implementation | custom 1.0.0 | ui-ux-engineer | 2026-11-09 |
+| teaching-method | custom 1.0.0 | teacher | 2026-11-09 |
 | ci-cd-pipelines | custom 1.0.0 | devops-engineer | 2026-11-08 |
 | multi-stage-dockerfile | github/awesome-copilot@caab1f6 | devops-engineer | 2026-11-08 |
 | java-junit | github/awesome-copilot@52a5840 | test-writer, through `testing-strategy` | 2026-11-08 |
@@ -71,6 +74,12 @@ Agents with an explicit `tools` list have no Skill tool, so `skills:` preloads t
 | init-project-orchestration | custom 1.0.0 | main session | 2026-11-09 |
 | apple-design | github.com/dickwu/apple-design-skill@904b0ee | ui-ux-engineer, by brief only | 2026-11-08 |
 | find-skills | vercel-labs/skills@d3701c1 (MIT, vendored; does not auto-update) | skill-scout | 2026-11-09 |
+| gsap-web | custom 1.0.0 | ui-ux-engineer, read on demand by path | 2026-11-09 |
+| threejs-web | custom 1.0.0 | ui-ux-engineer, read on demand by path | 2026-11-09 |
+| css-motion | custom 1.0.0 | ui-ux-engineer, read on demand by path | 2026-11-09 |
+| gsap-threejs | custom 1.0.0 | ui-ux-engineer, read on demand by path, with the two above | 2026-11-09 |
+| gsap-core, gsap-timeline, gsap-scrolltrigger, gsap-plugins, gsap-performance, gsap-react | greensock/gsap-skills@aed9cfd (MIT, vendored; does not auto-update) | ui-ux-engineer, through `gsap-web` | 2026-11-09 |
+| threejs-fundamentals, threejs-performance, threejs-loaders, threejs-react-three-fiber, threejs-shaders, threejs-postprocessing, threejs-materials, threejs-textures, threejs-lighting, threejs-animation, threejs-interaction, threejs-geometry | CloudAI-X/threejs-skills@0e18186 (MIT, vendored; does not auto-update) | ui-ux-engineer, through `threejs-web` | 2026-11-09 |
 
 Skill vetting, 2026-11-08:
 
@@ -90,11 +99,16 @@ Skill vetting, 2026-11-08:
 | obra/superpowers and addyosmani/agent-skills TDD | Not selected | Long, and require changing production code |
 | antfu/skills@vitest and callstack/react-native-testing-library@react-native-testing | Deferred | Install when a project adopts these tools |
 | ui-implementation (custom) | Selected | Stack-neutral, reuses an existing design system; credits addyosmani/web-quality-skills (MIT) for the WCAG 2.2 checklist structure |
+| teaching-method (custom) | Selected | Domain-independent teaching loop with spaced review notes; original text, design draws on ideas from sanyuan0704/sanyuan-skills `sigma`, sebastianelvis/hammer `teach`, mattpocock/skills `teach` and GarethManning/education-agent-skills |
 | anthropics/skills@frontend-design | Not selected | 1.1M installs; aesthetics first, the opposite of reusing an existing system; license unverified. Read optionally and read-only as a design-direction source when building from scratch |
 | vercel-labs web-design-guidelines | Rejected | 840K installs; review-only; fetches its instructions from a `main` branch at runtime |
 | addyosmani/web-quality-skills@accessibility | Not selected | 68.4K installs; MIT; accessibility only, about 380 lines; used as an idea source for `references/a11y.md` |
 | ui-ux-pro-max | Not selected | 441.8K installs; depends on scripts, aesthetics-driven, no license |
 | vercel-labs/skills@find-skills (d3701c11b1101251af14c9d148f026e1a47ebe17) | Passed, selected | MIT, Copyright (c) 2026 Vercel, Inc.; one 5.4 KB file, no scripts; only instructs `npx skills` commands, which `skill-scout` replaces with web search and never runs |
+| css-motion, gsap-web, threejs-web, gsap-threejs (custom) | Selected | Tool-specific motion guidance loaded on demand: plain CSS, GSAP, Three.js, or both (one render loop, reduced motion, teardown, resize, context loss, fallback); original text, credits greensock/gsap-skills and CloudAI-X/threejs-skills (MIT). css-motion states its browser-support table as checked 2026-11-09. Replaces the earlier single `web-motion-3d` skill |
+| greensock/gsap-skills@aed9cfd3277740755f6bfc1155c7aa645403b760: gsap-core, gsap-timeline, gsap-scrolltrigger, gsap-plugins, gsap-performance, gsap-react | Passed, selected | MIT, Copyright (c) 2026 GreenSock; one `SKILL.md` each (79 to 433 lines), no scripts, no hidden Unicode, full text reviewed. Copies recommend GSAP by default and `npm install gsap` / `@gsap/react`; `gsap-web` makes `ui-implementation` and the brief win. Known upstream typo: `Max.max` in the `gsap-core` horizontal scroll example |
+| CloudAI-X/threejs-skills@0e181866f095b5f06d005133876e926515390d95: threejs-fundamentals, threejs-performance, threejs-loaders, threejs-react-three-fiber, threejs-shaders, threejs-postprocessing, threejs-materials, threejs-textures, threejs-lighting, threejs-animation, threejs-interaction, threejs-geometry | Passed, selected | MIT, Copyright (c) 2026 CloudAI-X; one `SKILL.md` each (387 to 496 body lines, read on demand, not preloaded), no scripts, no hidden Unicode, full text reviewed; targets three r186 and API-checked against r187. CDN import maps (jsdelivr) in examples; drei's `useGLTF` loads the Draco decoder from a gstatic URL. `threejs-asset-pipeline` is referenced but not installed |
+| CloudAI-X/threejs-skills@threejs-asset-pipeline | Not selected | Out of scope; the installed skills tell the agent to use installed three types or official docs instead |
 
 ## Per-project overrides
 
@@ -119,6 +133,11 @@ Skill vetting, 2026-11-08:
 To change this setup, edit the `claude-orchestration` repository and run `install.sh` yourself.
 
 ## Changelog
+
+### 1.2.0 - 2026-11-09
+
+- Added the `teacher` agent and the custom `teaching-method` skill: teaches any subject one concept per turn in Vietnamese, runs live with `claude --agent teacher` or as a relayed subagent, and writes notes only under `~/learning/<topic>/`.
+- Added the custom `css-motion`, `gsap-web`, `threejs-web` and `gsap-threejs` skills for `ui-ux-engineer`, with vendored, vetted GSAP (greensock/gsap-skills@aed9cfd) and Three.js (CloudAI-X/threejs-skills@0e18186) skills, both MIT, read on demand from `~/.claude/skills/` rather than preloaded; the agent first chooses CSS, GSAP, Three.js or both. They require one render loop and reduced-motion handling and cover teardown, resize, context loss, WebGL fallback and idle pausing. The vendored copies do not auto-update.
 
 ### 1.1.0 - 2026-11-09
 
