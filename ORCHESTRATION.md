@@ -32,6 +32,7 @@ Escalation is haiku, then sonnet, then opus, up to 3 attempts per work unit. A h
 | orchestrator | opus | Agent, read-only tools; main thread only |
 | explorer | haiku | read-only |
 | researcher | sonnet | read-only + web |
+| skill-scout | sonnet | read-only + web; recommends skills, never installs |
 | architect | opus | read-only |
 | implementer | sonnet | edit + Bash |
 | quick-fixer | haiku | edit, no Bash |
@@ -46,7 +47,7 @@ Escalation is haiku, then sonnet, then opus, up to 3 attempts per work unit. A h
 | data-engineer | sonnet | edit + Bash, non-production only |
 | devops-engineer | sonnet | edit + Bash, no deploy |
 | doc-writer | haiku | edit, no Bash |
-| release-manager | sonnet | edit + Bash, no publish |
+| release-manager | sonnet | edit + Bash, no tag, publish or deploy; may commit, push, open a PR and merge only through `git-publish.sh` at the registered level |
 
 ## Skills registry
 
@@ -60,15 +61,16 @@ Agents with an explicit `tools` list have no Skill tool, so `skills:` preloads t
 | db-migrations-safe | custom 1.0.0 | data-engineer | 2026-11-08 |
 | api-design | custom 1.0.0 | api-designer | 2026-11-08 |
 | docs-writing | custom 1.0.0 | doc-writer | 2026-11-08 |
-| git-workflow | custom 1.0.0 | release-manager | 2026-11-08 |
+| git-workflow | custom 1.0.0 | release-manager | 2026-11-09 |
+| ui-implementation | custom 1.0.0 | ui-ux-engineer | 2026-11-09 |
 | ci-cd-pipelines | custom 1.0.0 | devops-engineer | 2026-11-08 |
 | multi-stage-dockerfile | github/awesome-copilot@caab1f6 | devops-engineer | 2026-11-08 |
 | java-junit | github/awesome-copilot@52a5840 | test-writer, through `testing-strategy` | 2026-11-08 |
 | swift-testing-pro | twostraws/swift-testing-agent-skill@2d6bba1 | test-writer, through `testing-strategy` | 2026-11-08 |
 | orchestrate | custom 1.0.0 | main session | 2026-11-08 |
-| init-project-orchestration | custom 1.0.0 | main session | 2026-11-08 |
+| init-project-orchestration | custom 1.0.0 | main session | 2026-11-09 |
 | apple-design | github.com/dickwu/apple-design-skill@904b0ee | ui-ux-engineer, by brief only | 2026-11-08 |
-| find-skills | ~/.agents/skills | main session | 2026-11-08 |
+| find-skills | vercel-labs/skills@d3701c1 (MIT, vendored; does not auto-update) | skill-scout | 2026-11-09 |
 
 Skill vetting, 2026-11-08:
 
@@ -87,6 +89,12 @@ Skill vetting, 2026-11-08:
 | manutej/luxor-claude-marketplace@jest-react-testing | Rejected | 1303 lines, 63 stars |
 | obra/superpowers and addyosmani/agent-skills TDD | Not selected | Long, and require changing production code |
 | antfu/skills@vitest and callstack/react-native-testing-library@react-native-testing | Deferred | Install when a project adopts these tools |
+| ui-implementation (custom) | Selected | Stack-neutral, reuses an existing design system; credits addyosmani/web-quality-skills (MIT) for the WCAG 2.2 checklist structure |
+| anthropics/skills@frontend-design | Not selected | 1.1M installs; aesthetics first, the opposite of reusing an existing system; license unverified. Read optionally and read-only as a design-direction source when building from scratch |
+| vercel-labs web-design-guidelines | Rejected | 840K installs; review-only; fetches its instructions from a `main` branch at runtime |
+| addyosmani/web-quality-skills@accessibility | Not selected | 68.4K installs; MIT; accessibility only, about 380 lines; used as an idea source for `references/a11y.md` |
+| ui-ux-pro-max | Not selected | 441.8K installs; depends on scripts, aesthetics-driven, no license |
+| vercel-labs/skills@find-skills (d3701c11b1101251af14c9d148f026e1a47ebe17) | Passed, selected | MIT, Copyright (c) 2026 Vercel, Inc.; one 5.4 KB file, no scripts; only instructs `npx skills` commands, which `skill-scout` replaces with web search and never runs |
 
 ## Per-project overrides
 
@@ -106,10 +114,20 @@ Skill vetting, 2026-11-08:
 - `hooks/readonly-bash.sh`: allowlist for `code-reviewer` and `security-auditor`.
 - `hooks/stop-verify-reminder.sh`: non-blocking test reminder for the orchestrator.
 - `permissions.deny`: blocks reads of env files, keys and credential directories.
+- `hooks/git-publish.sh`: per-repository git level (off, `commit`, `push`, `pr`, `merge`) registered by the user with `enable` and kept in the user-level `~/.claude/git-publish.registry`. Only `release-manager` runs `status`, `plan`, `push`, `pr` and `merge` (no TTY), and only at a registered level and when the plan the user approved includes the step; merge also needs one user confirmation once the `ci` verdict is `passed` (marking a draft ready with `merge --mark-ready-only` needs only the approved plan), and CI with at least one SUCCESS check, none failing, none pending. "Only `release-manager`" is a rule, not enforced by the guard. CI results come from repo-authored workflows and scripts, so a commit editing a script CI runs can still fake green; only required status checks plus human review close that. `enable` and `disable` need a TTY and are for the user only. Direct `git push`, `gh pr create` and `gh pr merge` stay blocked. Conversation approval is not technically enforced, and this is not a security boundary: a deliberately evasive agent can still bypass the guards and grant itself a level, because regex cannot close this. Repositories at level `merge` therefore need branch protection with required status checks. Repo hooks (pre-push, husky, gitleaks) do not run on this route. `git commit` is not hook-gated, so the `commit` level is a rule agents follow by reading `status`.
 
 To change this setup, edit the `claude-orchestration` repository and run `install.sh` yourself.
 
 ## Changelog
+
+### 1.1.0 - 2026-11-09
+
+- Added the `skill-scout` agent (read-only + web), which preloads the vendored `find-skills` skill (vercel-labs/skills@d3701c1, MIT) to find and vet skills and recommend adopting or creating one; it never installs. The vendored copy does not auto-update; re-vendor and re-review to upgrade.
+- Added optional per-project git automation: `/init-project-orchestration` asks for a level, `release-manager` may commit, push, open a draft PR and squash merge through `git-publish.sh`, at the level the user registered (`commit`, `push`, `pr`, `merge`) and when the approved plan includes the step. Merge needs one user confirmation and passing CI (at least one SUCCESS check, none failing or pending). Force push, tags, publish and deploy stay with the user.
+- Upgrade note: `install.sh` only adds settings, so remove the old denies `Bash(*git-publish.sh push*)` and `Bash(*git-publish.sh pr *)` by hand from `~/.claude/settings.json`.
+- `git-workflow`: added Conventional Commits, branch naming and PR body standards.
+- `gh pr create` and `gh api` writes are blocked for all projects.
+- Added the `ui-implementation` skill, preloaded by `ui-ux-engineer`: detects an existing, partial or missing design system, with references for accessibility, states and responsive rules, and design system bootstrap.
 
 ### 1.0.3 - 2026-11-08
 

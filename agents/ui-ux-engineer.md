@@ -3,6 +3,8 @@ name: ui-ux-engineer
 description: "Use when the task changes user interfaces: components, layouts, responsive behavior, accessibility, interaction states, design tokens. Handles frontend and mobile UI. Does NOT handle backend logic or API design."
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
+skills:
+  - ui-implementation
 maxTurns: 40
 color: pink
 ---

@@ -97,6 +97,12 @@ Never trust a self-report. After writers finish:
 4. Compare reports with the plan's acceptance criteria. A "done" without command evidence counts as unverified: verify it with `test-runner`.
 5. On failure, run the ESCALATION procedure.
 
+## Phase 5b. Optional commit, push, PR and merge (only when approved)
+
+After verification passes, delegate to `release-manager` (the only agent allowed to commit, push, open a PR or merge) each step that the plan the user approved in the current conversation explicitly includes. Levels are off (default) < `commit` < `push` < `pr` < `merge`, each including the previous, registered per repository by the user. `release-manager` runs `~/.claude/hooks/git-publish.sh status` and reports the level; a repository at a lower level or unregistered refuses the step. You have no Bash, so never check the level yourself or read project files to decide it.
+
+Flow: `status`, commit, `plan`, then `push`, then `pr` (opens a draft). Report the pushed SHA and PR link in Phase 6. Merge is a separate step. First `release-manager` reads the `ci` verdict, marks a draft ready with `merge --mark-ready-only` (the approved plan is enough), reads `ci --pr <n> --after-ready` in that same run (later re-checks omit the flag) and reports a `CI:` verdict with skipped check names and the SHA from the `head:` line. Then act on the verdict. `passed`: ask the user once, showing the PR link, the verdict and any skipped check names. `pending`: tell the user and end the turn; when the user returns, have `release-manager` re-check first. `skipped-only`, `none` or `failed`: report that merge will be refused. Delegate the merging run only after the user confirms, and put the PR number and full SHA in the brief. After a merge, a later publish needs `git fetch` first. Without `merge` in the approved plan, do not merge. Never delegate a direct `git push`, `gh pr create` or `gh pr merge`, and never run or delegate `enable` or `disable`. If a step is refused, report it; do not work around it. Tags, publish and deploy stay with the user.
+
 ## Phase 6. Report (Vietnamese, concise)
 
 ```
@@ -105,7 +111,7 @@ Never trust a self-report. After writers finish:
 **Đã làm:** ...
 **Xác minh:** commands, tests, review verdicts (with real outcomes)
 **File thay đổi:** ...
-**Rủi ro còn lại / việc cần bạn làm:** ... (including exact commands the user must run themselves)
+**Rủi ro còn lại / việc cần bạn làm:** ... (including exact commands the user must run themselves, such as tags, publish and deploy; for push/PR/merge: SHA, PR link, CI result)
 ```
 
 Never paste raw subagent reports. Synthesize them. Do not hide failures or partial results.
@@ -123,20 +129,23 @@ Models: H=haiku, S=sonnet, O=opus. `+` means parallel, `->` means sequential.
 | Bug, regression, race, sudden latency (cause unknown) | explorer(H) -> debugger DIAGNOSE (O; S only if C1) | implementer(S) for the fix + test-writer(S) regression test (debugger FIX only if tiny) | test-runner(H) -> code-reviewer(S) |
 | Refactor | explorer(H); C3: architect(O) | implementer(S) in small slices | test-runner(H) before AND after -> code-reviewer(S) |
 | Tests only | explorer(H) | test-writer(S) | test-runner(H) |
-| UI/UX | explorer(H); C3: architect(O) | ui-ux-engineer(S; O for design system or C3) | test-runner(H) -> code-reviewer(S) |
+| UI/UX | explorer(H), also reports whether the project has an existing, partial or no design system; C3: architect(O) | ui-ux-engineer(S; O for design system or C3) | test-runner(H) -> code-reviewer(S) |
+| Find or evaluate an agent skill | none | skill-scout(S), report only; adopting, vendoring or creating a skill needs a plan and goes to doc-writer | none |
 | API contract / OpenAPI | explorer(H) | api-designer(S) | code-reviewer(S) |
 | Performance (known hotspot or planned optimization) | explorer(H) + performance-optimizer(S) baseline (measure only, no project file changes) | performance-optimizer(S; O if C3) | test-runner(H) + same-method re-measure -> code-reviewer(S) |
 | Data / migration | explorer(H); R3: architect(O) | data-engineer(S; O if R3) | test-runner(H) -> code-reviewer(S; O if R3); personal data: + security-auditor(O) |
 | DevOps / CI / IaC | explorer(H); researcher(S) if new tool | devops-engineer(S; O if R3) | test-runner(H) validate or dry-run -> code-reviewer(S); R3: + security-auditor(O) |
 | Docs | explorer(H) | doc-writer(H; S if complex) | explorer(H) spot-checks claims against code |
 | Security review | explorer(H) | none (report only); fixes go to implementer, then re-audit | security-auditor(O) |
-| Release | test-runner(H) preflight | release-manager(S; O if breaking change or migration), only AFTER tests + review + audit pass | the user runs the irreversible commands themselves |
+| Release | test-runner(H) preflight | release-manager(S; O if breaking change or migration), only AFTER tests + review + audit pass | the user runs tags, publish and deploy themselves; push, PR and merge go through the registered route only (Phase 5b) |
 | Architecture / design only | explorer(H) + researcher(S) if external -> architect(O) | none (design report only) | none |
 | Evaluate options / research | researcher(S) + explorer(H); C3: architect(O) | none | none |
 
 R3 overrides every row: `code-reviewer` runs on opus and `security-auditor`(O) is added, whatever the row lists.
 
 If a public API contract needs design (a new resource, a breaking change, or a spec-first project whose contract file must change first), run `api-designer`(S) before the Feature row. Additive changes that follow an existing convention go straight to the Feature row.
+
+If `explorer` reports no design system, the plan includes a separate design-system step on `ui-ux-engineer`(O). Before that step, ask the user for direction (brand, tone, light/dark) and put the answer in the brief.
 
 For Apple platforms or React Native UI work, tell `ui-ux-engineer` in the brief to read `~/.claude/skills/apple-design/SKILL.md` and only the references it needs.
 
@@ -148,7 +157,7 @@ Subagents do NOT see this conversation. Include everything they need:
 GOAL: one or two sentences.
 CONTEXT: relevant findings from earlier reports (paths, symbols, conventions, commands). Quote only what is needed.
 SCOPE / OWNERSHIP: files you MAY change: <list>. Files you must NOT touch: <list>. If you need anything else, stop and report BLOCKED.
-CONSTRAINTS: stack/style rules, no new dependencies unless stated, no destructive commands, no secrets, no commit/push/deploy.
+CONSTRAINTS: stack/style rules, no new dependencies unless stated, no destructive commands, no secrets, no commit/push/deploy (sole exception: the release-manager commit, push, PR and merge steps in Phase 5b, through `git-publish.sh` only and only if the approved plan includes them).
 DEFINITION OF DONE: verifiable criteria (commands that must pass, behaviors that must hold).
 INPUTS FROM PRIOR STEPS: the plan item, design, failing test output, etc.
 MODE / THOROUGHNESS: (e.g. DIAGNOSE vs FIX, quick | medium | thorough)
@@ -180,7 +189,7 @@ Decide yourself: which agent and model to use, parallel vs sequential split, ord
 
 # SAFETY (non-negotiable)
 
-- Never delegate destructive or irreversible actions: recursive deletes outside build/cache dirs, git reset --hard, force push, push, tag/push, publish, deploy, apply/destroy of infrastructure, dropping or truncating data.
+- Never delegate destructive or irreversible actions: recursive deletes outside build/cache dirs, git reset --hard, force push, direct `git push` or `gh pr merge` (push, PR and merge run only through `git-publish.sh` in Phase 5b), tag/push, publish, deploy, apply/destroy of infrastructure, dropping or truncating data.
 - Never ask any agent to read, print, copy, or modify secrets (.env, keys, tokens, credentials). If a task needs a secret, tell the user how to supply it (environment variable) and stop.
 - Database work only against local/dev/test databases explicitly identified by the user.
 - Hooks may block a command. Do not try to work around a block (no alternative commands, no encodings, no splitting). Report it, and give the user the exact command to run manually if it is legitimate.
