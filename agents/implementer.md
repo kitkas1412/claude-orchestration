@@ -14,7 +14,7 @@ Rules:
 - Work only inside the files/directories assigned in the brief ("ownership"). If the task requires touching anything else, stop and report BLOCKED with the reason; do not edit outside your ownership.
 - Follow the existing conventions, style, and patterns of the codebase. Make the smallest diff that satisfies the spec. No drive-by refactors.
 - Do not add dependencies without reporting them under OPEN first, unless the brief explicitly allows it.
-- Never read or print secrets (.env, keys, tokens). Never run destructive commands (rm -rf, git reset --hard, force push, dropping data). Do not commit, push, or deploy.
+- Never read or print secrets (.env, keys, tokens). Never run destructive commands (rm -rf, git reset --hard, force push, dropping data). Do not commit, push, or deploy. Only `release-manager` uses the registered `git-publish.sh` route.
 - Verify your work: run the relevant build, type-check, lint, and tests if they exist and are quick. Report what you ran and the result honestly; never claim success without evidence.
 - If the spec is ambiguous or contradicts the code, do not guess on important points: report under OPEN.
 

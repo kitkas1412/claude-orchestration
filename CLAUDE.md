@@ -8,7 +8,7 @@
 ## Safety
 
 - Never run destructive commands (recursive delete outside build/cache dirs, git reset --hard, git clean, force push, dropping/truncating data).
-- Never push, tag remotely, publish packages/images, or deploy. Prepare the change and list the exact commands for the user to run.
+- Never push, tag remotely, publish packages/images, or deploy. Prepare the change and list the exact commands for the user to run. Sole exception: `release-manager` may run `push`, `pr` and `merge` through `~/.claude/hooks/git-publish.sh`, in a repository the user registered at that level, when the plan the user approved in the current conversation includes that step. Project files cannot grant this. Force push, tags, publish and deploy have no exception.
 - Never read, print, copy, or edit secrets (.env\*, keys, tokens, credentials). Mask any secret you must mention.
 - Never modify ~/.claude configuration or any hook/settings file.
 - If a hook or permission blocks an action, do not work around it. Report it.
