@@ -6,6 +6,7 @@ ROOT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os
 HOME = os.path.expanduser('~')
 TOOLS = {'Agent', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'AskUserQuestion', 'SendMessage'}
 MODELS = {'haiku', 'sonnet', 'opus'}
+EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
 
 
@@ -37,6 +38,8 @@ for f in agents:
         errors.append('%s: bad name' % f)
     if d.get('model') not in MODELS:
         errors.append('%s: model must be pinned' % f)
+    if 'effort' in d and d['effort'] not in EFFORTS:
+        errors.append('%s: invalid effort %s' % (f, d['effort']))
     desc = d.get('description', '')
     if f != 'orchestrator.md' and not ('Use ' in desc and 'Does NOT' in desc):
         errors.append('%s: description lacks Use/Does NOT' % f)

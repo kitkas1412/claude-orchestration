@@ -66,7 +66,10 @@ for f in ORCHESTRATION.md rules/orchestration.md settings.json .orchestration-ma
 done
 assert "skills dir populated" test -n "$(find "$C/skills" -type f 2>/dev/null | head -1)"
 assert "third_party skills exported" test -n "$(cd "$REPO/third_party" && find skills -type f -not -name .DS_Store | head -1 | sed "s|^|$C/|" | xargs -I{} sh -c 'test -f "{}" && echo y')"
-for h in guard-bash guard-write readonly-bash stop-verify-reminder; do
+assert "exists: hooks/filter-test-output.sh" test -f "$C/hooks/filter-test-output.sh"
+assert "Bash PreToolUse entry references filter-test-output.sh" \
+  jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(contains("hooks/filter-test-output.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
+for h in guard-bash guard-write readonly-bash stop-verify-reminder filter-test-output; do
   assert "executable: $h.sh" test -x "$C/hooks/$h.sh"
 done
 eq "no git-publish.sh under .claude" "" "$(find "$C" -name 'git-publish.sh' | head -1)"

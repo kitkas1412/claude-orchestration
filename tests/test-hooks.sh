@@ -361,4 +361,266 @@ check readonly-bash.sh 0 'git log -1'
 check readonly-bash.sh 0 'sort a.txt'
 check readonly-bash.sh 0 'uniq -c'
 
+# ---- filter-test-output.sh (fail-open PreToolUse rewriter, not part of the fail-closed loops) ----
+FHOOK="$HOOKS/filter-test-output.sh"
+FSELF="$(cd "$HOOKS" && pwd -P)/filter-test-output.sh"
+FT=$(mktemp -d "${TMPDIR:-/tmp}/filter-hook-test.XXXXXX")
+fnote() { # fnote <ok|fail> <label> [detail]
+  if [ "$1" = ok ]; then echo "ok    [filter-test-output.sh] $2"; else echo "FAIL  [filter-test-output.sh] $2 ${3:-}"; fail=1; fi
+}
+fhook_out() { # fhook_out <command>: prints hook stdout for a command with description and timeout
+  jq -n --arg c "$1" '{tool_input:{command:$c,description:"desc",timeout:5000}}' | "$FHOOK" 2>/dev/null
+}
+checkf_rewrite() {
+  local cmd=$1 out rc want
+  out=$(jq -n --arg c "$cmd" '{tool_input:{command:$c,description:"desc",timeout:5000}}' | "$FHOOK" 2>/dev/null); rc=$?
+  want="( set -o pipefail; $cmd 2>&1 | '$FSELF' --filter )"
+  if [ "$rc" = 0 ] \
+    && [ "$(jq -r '.hookSpecificOutput.updatedInput.command' <<<"$out")" = "$want" ] \
+    && jq -e '.hookSpecificOutput.hookEventName == "PreToolUse"
+              and .hookSpecificOutput.updatedInput.description == "desc"
+              and .hookSpecificOutput.updatedInput.timeout == 5000
+              and (tostring | contains("permissionDecision") | not)' <<<"$out" >/dev/null; then
+    fnote ok "rewrite: $cmd"
+  else
+    fnote fail "rewrite: $cmd" "rc=$rc out=$out"
+  fi
+}
+checkf_none() { # checkf_none <command> [env assignment]
+  local cmd=$1 out rc
+  out=$(jq -n --arg c "$cmd" '{tool_input:{command:$c}}' | env ${2:-X_UNUSED=1} "$FHOOK" 2>/dev/null); rc=$?
+  if [ "$rc" = 0 ] && [ "$out" = '{}' ]; then fnote ok "no rewrite: ${2:+$2 }$(printf '%s' "$cmd" | tr '\n' '~')"; else fnote fail "no rewrite: $cmd" "rc=$rc out=$out"; fi
+}
+
+for c in 'npm test' 'npm test -- --watch=false' 'npm run test' 'npm run build' 'npm run lint:fix' 'npm run test:unit-fast' 'npm run test:unit' \
+         'pnpm test' 'pnpm run test' 'pnpm run build' 'pnpm run lint' 'yarn test' 'yarn build' 'yarn lint' \
+         'npx jest' 'npx vitest run src/a.test.ts' 'pytest' 'pytest -q tests/test_a.py::test_x' 'python -m pytest -x' 'python3 -m pytest' \
+         'go test ./...' 'go build ./cmd/x' 'go vet ./...' 'cargo test' 'cargo build --release' 'cargo clippy' \
+         'make test' 'make build' 'make lint' 'make check' 'bash tests/test-hooks.sh' 'python3 tests/lint.py'; do
+  checkf_rewrite "$c"
+done
+
+for c in 'npm test; rm x' 'npm test && echo hi' 'npm test | cat' 'npm test > out' 'npm test < in' 'npm test &' \
+         'npm test $(id)' 'npm test `id`' 'npm test "quoted"' "npm test 'q'" $'npm test\nrm x' 'npm test #c' 'npm test \x' \
+         'npm install' 'rm -rf build' 'curl x' 'npm run deploy' 'npm runtest' 'pytestx' 'go run main.go' 'make install' \
+         'bash tests/../evil.sh' 'bash tests/sub/a.sh' 'python3 tests/a.sh' \
+         "'/x/filter-test-output.sh' '--run' 'npm test'" '/x/filter-test-output.sh --run npm' '' \
+         ' npm test' 'FOO=1 npm test' 'cd x && npm test' \
+         'npm run buildx' 'npm run lint-and-deploy' 'npm run test-e2e' \
+         "( set -o pipefail; pytest 2>&1 | '$FSELF' --filter )"; do
+  checkf_none "$c"
+done
+checkf_none 'npm test' CLAUDE_FILTER_OUTPUT=0
+out=$(jq -n '{tool_input:{command:"npm test",run_in_background:true}}' | "$FHOOK" 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = '{}' ]; then fnote ok "no rewrite: run_in_background true"; else fnote fail "no rewrite: run_in_background true" "rc=$rc out=$out"; fi
+out=$(jq -n '{tool_input:{command:"npm test",run_in_background:false}}' | "$FHOOK" 2>/dev/null)
+if jq -e '.hookSpecificOutput.updatedInput.run_in_background == false and (.hookSpecificOutput.updatedInput.command | startswith("( set -o pipefail; npm test 2>&1 | "))' <<<"$out" >/dev/null 2>&1; then
+  fnote ok "rewrite: run_in_background false"
+else
+  fnote fail "rewrite: run_in_background false" "out=$out"
+fi
+
+# fail-open: bad input and missing jq print {} (or nothing) and exit 0, never 2
+for in in '{bad json' '{"tool_input":' '' '{}' '{"tool_input":{}}' '{"tool_input":{"command":123}}'; do
+  out=$(printf '%s' "$in" | "$FHOOK" 2>/dev/null); rc=$?
+  if [ "$rc" = 0 ] && [ "$out" = '{}' ]; then fnote ok "fail-open input: $in"; else fnote fail "fail-open input: $in" "rc=$rc out=$out"; fi
+done
+NOJQ2=$(mktemp -d)
+out=$(printf '%s' '{"tool_input":{"command":"npm test"}}' | PATH="$NOJQ2" "$BASH_BIN" "$FHOOK" 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = '{}' ]; then fnote ok "jq missing: exit 0, {}"; else fnote fail "jq missing" "rc=$rc out=$out"; fi
+rmdir "$NOJQ2"
+
+# non-executable SELF: a copy of the hook without the exec bit must not rewrite anything
+mkdir "$FT/noexec"
+cp "$FHOOK" "$FT/noexec/filter-test-output.sh"; chmod 644 "$FT/noexec/filter-test-output.sh"
+out=$(jq -n '{tool_input:{command:"npm test"}}' | "$BASH_BIN" "$FT/noexec/filter-test-output.sh" 2>/dev/null); rc=$?
+if [ "$rc" = 0 ] && [ "$out" = '{}' ]; then fnote ok "non-executable SELF: exit 0, {}"; else fnote fail "non-executable SELF" "rc=$rc out=$out"; fi
+
+# --filter mode usage: anything but exactly --filter prints usage, exits 2, runs nothing
+out=$(TMPDIR="$FT" "$FHOOK" --run 'echo X' </dev/null 2>&1); rc=$?
+if [ "$rc" = 2 ] && ! grep -qx X <<<"$out" && grep -q '^usage:' <<<"$out"; then fnote ok "--run 'echo X': usage, exit 2, nothing executed"; else fnote fail "--run 'echo X'" "rc=$rc out=$out"; fi
+out=$(echo hi | TMPDIR="$FT" "$FHOOK" --filter extra 2>&1); rc=$?
+if [ "$rc" = 2 ] && ! grep -qx hi <<<"$out"; then fnote ok "--filter extra: usage, exit 2"; else fnote fail "--filter extra" "rc=$rc out=$out"; fi
+out=$(TMPDIR="$FT" "$FHOOK" --run </dev/null 2>&1); rc=$?
+if [ "$rc" = 2 ]; then fnote ok "--run without command: usage, exit 2"; else fnote fail "--run without command" "rc=$rc"; fi
+if [ -z "$(ls -A "$FT" | grep '^filter-test-output\.')" ]; then fnote ok "usage errors leave no log"; else fnote fail "usage errors leave no log"; fi
+
+# rewritten command executed under bash -c and zsh -c, with a stub pytest first on PATH
+mkdir "$FT/bin"
+printf '%s\n' '#!/bin/sh' 'sh -c "$STUB_BODY"' 'exit "$STUB_RC"' > "$FT/bin/pytest"
+chmod +x "$FT/bin/pytest"
+REWRITTEN=$(jq -n '{tool_input:{command:"pytest -q tests/test_a.py"}}' | "$FHOOK" | jq -r '.hookSpecificOutput.updatedInput.command')
+frun_sh() { # frun_sh <shell> <stub body> <stub exit code>: output to $FT/o, status in $rc
+  STUB_BODY="$2" STUB_RC="$3" PATH="$FT/bin:$PATH" TMPDIR="$FT" "$1" -c "$REWRITTEN" >"$FT/o" 2>&1; rc=$?
+}
+flogs() { find "$FT" -maxdepth 1 -type f -name 'filter-test-output.*'; }
+LONGBODY='seq 1 500 | sed "250s/.*/FAIL: the middle test/"'
+for sh in bash zsh; do
+  if ! command -v "$sh" >/dev/null 2>&1; then echo "skip  [filter-test-output.sh] $sh not installed"; continue; fi
+  for code in 0 1 3 127; do
+    for kind in short long; do
+      if [ $kind = short ]; then body='seq 1 10'; else body=$LONGBODY; fi
+      rm -f "$FT"/filter-test-output.*
+      frun_sh "$sh" "$body" "$code"
+      if [ "$rc" = "$code" ]; then fnote ok "$sh -c rewritten: exit $code preserved ($kind output)"; else fnote fail "$sh -c rewritten exit $code ($kind)" "got=$rc"; fi
+    done
+  done
+
+  rm -f "$FT"/filter-test-output.*
+  frun_sh "$sh" 'printf "a\nb\n"; echo err >&2; printf "last-no-newline"' 0
+  printf 'a\nb\nerr\nlast-no-newline' > "$FT/want"
+  if cmp -s "$FT/o" "$FT/want" && [ -z "$(flogs)" ]; then fnote ok "$sh -c rewritten: short output byte-identical with stderr merged, no log left"; else fnote fail "$sh -c short output byte-identical" "$(od -c "$FT/o" | head -3)"; fi
+
+  rm -f "$FT"/filter-test-output.*
+  frun_sh "$sh" 'seq 1 200' 0
+  if cmp -s "$FT/o" <(seq 1 200) && [ -z "$(flogs)" ]; then fnote ok "$sh -c rewritten: exactly 200 lines unfiltered, no log"; else fnote fail "$sh -c exactly 200 lines unfiltered"; fi
+
+  rm -f "$FT"/filter-test-output.*
+  frun_sh "$sh" "$LONGBODY" 1
+  logs=$(flogs)
+  lines=$(wc -l <"$FT/o" | tr -d ' ')
+  footer=$(tail -1 "$FT/o")
+  if [ "$(printf '%s\n' "$logs" | grep -c .)" = 1 ] \
+    && grep -qF 'FAIL: the middle test' "$FT/o" \
+    && [ "$lines" -lt 200 ] \
+    && [ "$footer" = "[filter-test-output] 500 lines total; full log: $logs" ] \
+    && [ "$(ls -l "$logs" | cut -c1-10)" = "-rw-------" ] \
+    && [ "$(wc -l < "$logs" | tr -d ' ')" = 500 ] \
+    && [ "$(sed -n 1p "$FT/o")" = 1 ] && grep -qx 20 "$FT/o" && ! grep -qx 21 "$FT/o" \
+    && grep -qx 500 "$FT/o" && grep -qx 441 "$FT/o" && ! grep -qx 440 "$FT/o" && ! grep -qx 100 "$FT/o"; then
+    fnote ok "$sh -c rewritten: 500 lines -> head, FAIL, tail, exact footer, log mode 600, < 200 lines"
+  else
+    fnote fail "$sh -c rewritten long output filtered" "lines=$lines logs=$logs footer=$footer"
+  fi
+done
+rm -f "$FT"/filter-test-output.*
+
+# new failure markers survive filtering of long output (filler lines match none of them)
+MK='i=1; while [ $i -le 300 ]; do case $i in
+  60) echo "src/a.ts(3,4): error TS2322: Type x is not assignable";;
+  100) echo "  12:5  error  no-unused-vars  rule";;
+  140) echo "thread main panicked at src/lib.rs:9";;
+  180) echo "3 failing";;
+  220) echo "not ok 7 - thing";;
+  *) echo "filler line $i";; esac; i=$((i+1)); done'
+frun_sh bash "$MK" 1
+miss=""
+for m in 'error TS2322' '  12:5  error  no-unused-vars' 'panicked at src/lib.rs' '3 failing' 'not ok 7'; do
+  grep -qF "$m" "$FT/o" || miss="$miss [$m]"
+done
+if [ -z "$miss" ] && ! grep -qx 'filler line 30' "$FT/o"; then fnote ok "TS error, ESLint column, panicked at, N failing, not ok survive filtering"; else fnote fail "failure markers survive filtering" "missing:$miss"; fi
+rm -f "$FT"/filter-test-output.*
+frun_sh bash 'seq 1 300 | sed "150s/.*/E   assert 1 == 2/"' 1
+if grep -qF 'E   assert 1 == 2' "$FT/o"; then fnote ok "pytest '^E ' line survives filtering"; else fnote fail "pytest '^E ' line survives filtering"; fi
+rm -f "$FT"/filter-test-output.*
+
+# a single 1 MB line is truncated, with a marker, and the output stays small
+head -c 1048576 /dev/zero | tr '\0' x | TMPDIR="$FT" "$FHOOK" --filter >"$FT/o" 2>&1; rc=$?
+if [ "$rc" = 0 ] && grep -qF '... [filter-test-output: line truncated, 1048576 chars]' "$FT/o" \
+  && [ "$(wc -c <"$FT/o" | tr -d ' ')" -lt 4000 ] && [ -z "$(flogs)" ]; then
+  fnote ok "1 MB single line truncated with marker"
+else
+  fnote fail "1 MB single line truncated" "rc=$rc size=$(wc -c <"$FT/o")"
+fi
+
+# TMPDIR unusable: input passes through unchanged, exit 0
+seq 1 300 | TMPDIR="$FT/does-not-exist" "$FHOOK" --filter >"$FT/o" 2>/dev/null; rc=$?
+if [ "$rc" = 0 ] && cmp -s "$FT/o" <(seq 1 300); then fnote ok "missing TMPDIR: input passes through, exit 0"; else fnote fail "missing TMPDIR passthrough" "rc=$rc"; fi
+
+# TMPDIR injection: a value starting with "-" or a relative path is never handed to find; nothing in cwd is deleted
+mkdir -p "$FT/cwd/relative/dir"
+touch "$FT/cwd/sentinel" "$FT/cwd/filter-test-output.SENTINEL" "$FT/cwd/relative/dir/filter-test-output.SENTINEL"
+touch -t 202001010000 "$FT/cwd/sentinel" "$FT/cwd/filter-test-output.SENTINEL" "$FT/cwd/relative/dir/filter-test-output.SENTINEL"
+for td in -delete relative/dir; do
+  out=$(cd "$FT/cwd" && seq 1 5 | TMPDIR="$td" "$FHOOK" --filter 2>/dev/null); rc=$?
+  if [ "$rc" = 0 ] && [ "$out" = "$(seq 1 5)" ] && [ -f "$FT/cwd/sentinel" ] && [ -f "$FT/cwd/filter-test-output.SENTINEL" ] \
+    && [ -f "$FT/cwd/relative/dir/filter-test-output.SENTINEL" ]; then
+    fnote ok "TMPDIR=$td: output passes through, exit 0, nothing in cwd deleted"
+  else
+    fnote fail "TMPDIR=$td" "rc=$rc $(ls -A "$FT/cwd" | tr '\n' ' ')"
+  fi
+done
+
+# old-log cleanup: only this user's old regular files are removed
+mkdir "$FT/clean"
+touch "$FT/clean/filter-test-output.OLD" "$FT/clean/filter-test-output.FRESH"
+mkdir "$FT/clean/filter-test-output.DIR"
+touch -t 202001010000 "$FT/clean/filter-test-output.OLD" "$FT/clean/filter-test-output.DIR"
+echo hi | TMPDIR="$FT/clean" "$FHOOK" --filter >/dev/null 2>&1; rc=$?
+if [ "$rc" = 0 ] && [ ! -e "$FT/clean/filter-test-output.OLD" ] && [ -f "$FT/clean/filter-test-output.FRESH" ] \
+  && [ -d "$FT/clean/filter-test-output.DIR" ]; then
+  fnote ok "cleanup deletes old log, keeps fresh log and same-named directory"
+else
+  fnote fail "old-log cleanup" "rc=$rc $(ls -A "$FT/clean" | tr '\n' ' ')"
+fi
+
+# cap: patched copy with CAP_KB=64 stores at most ~64 KB, drains the rest, marks it, keeps the producer's status
+mkdir "$FT/cap"
+sed 's/CAP_KB=51200/CAP_KB=64/' "$FHOOK" > "$FT/cap/filter-test-output.sh"; chmod +x "$FT/cap/filter-test-output.sh"
+if grep -q 'CAP_KB=64 ' "$FT/cap/filter-test-output.sh"; then
+  ( set -o pipefail; sh -c 'seq 1 200000; exit 7' 2>&1 | TMPDIR="$FT" "$FT/cap/filter-test-output.sh" --filter ) >"$FT/o" 2>&1; rc=$?
+  logs=$(flogs)
+  if [ "$rc" = 7 ] && grep -q 'log capped at' "$FT/o" && [ "$(printf '%s\n' "$logs" | grep -c .)" = 1 ] \
+    && [ "$(wc -c <"$logs" | tr -d ' ')" -lt 200000 ] && [ "$(wc -l <"$FT/o" | tr -d ' ')" -lt 300 ]; then
+    fnote ok "cap: large output capped, marker present, producer exit 7 preserved"
+    if grep -q 'log capped at 64 KB;' "$FT/o"; then fnote ok "cap marker shows KB below 1 MB"; else fnote fail "cap marker units" "$(grep 'log capped' "$FT/o")"; fi
+  else
+    fnote fail "cap" "rc=$rc logsize=$(wc -c <"$logs" 2>/dev/null) out=$(tail -3 "$FT/o")"
+  fi
+else
+  fnote fail "cap: could not patch CAP_KB in the hook copy"
+fi
+rm -f "$FT"/filter-test-output.*
+
+# signal: TERM during a slow producer prints the view so far, an interrupted footer, and exits 143
+sh -c 'echo $$ > "$1"; seq 1 300; exec sleep 30' sh "$FT/prod.pid" 2>/dev/null | TMPDIR="$FT" "$FHOOK" --filter >"$FT/sig.out" 2>&1 &
+fpid=$!
+n=0
+while [ $n -lt 100 ]; do
+  lg=$(flogs | head -1)
+  [ -n "$lg" ] && [ "$(wc -l <"$lg" | tr -d ' ')" -ge 300 ] && break
+  sleep 0.1; n=$((n+1))
+done
+kill -TERM "$fpid" 2>/dev/null
+wait "$fpid" 2>/dev/null; rc=$?
+[ -s "$FT/prod.pid" ] && kill "$(cat "$FT/prod.pid")" 2>/dev/null
+if [ "$rc" = 143 ] && grep -q '^\[filter-test-output\] interrupted after 300 lines; full log: ' "$FT/sig.out" \
+  && grep -qx 300 "$FT/sig.out" && grep -qx 1 "$FT/sig.out"; then
+  fnote ok "TERM during slow producer: filtered view, interrupted footer, exit 143"
+else
+  fnote fail "TERM handling" "rc=$rc out=$(tail -2 "$FT/sig.out")"
+fi
+rm -f "$FT"/filter-test-output.*
+
+# signal: INT, same flow, exit 130. Background jobs ignore SIGINT when job control is off, so the
+# filter runs in the foreground and a background helper sends INT. The producer gets explicit stdin.
+if ! "$BASH_BIN" -c 'trap "exit 0" INT; kill -INT $$; exit 1' 2>/dev/null; then
+  echo "skip  [filter-test-output.sh] SIGINT is ignored in this test shell; INT test not run"
+else
+  rm -f "$FT/prod.pid" "$FT/filt.pid"
+  ( n=0
+    while [ $n -lt 100 ]; do
+      lg=$(flogs | head -1)
+      [ -s "$FT/filt.pid" ] && [ -n "$lg" ] && [ "$(wc -l <"$lg" | tr -d ' ')" -ge 300 ] && break
+      sleep 0.1; n=$((n+1))
+    done
+    [ -s "$FT/filt.pid" ] && kill -INT "$(cat "$FT/filt.pid")" 2>/dev/null
+    sleep 0.5
+    [ -s "$FT/prod.pid" ] && kill "$(cat "$FT/prod.pid")" 2>/dev/null ) &
+  helper=$!
+  sh -c 'echo $$ > "$1"; seq 1 300; exec sleep 30' sh "$FT/prod.pid" </dev/null 2>/dev/null \
+    | TMPDIR="$FT" sh -c 'echo $$ > "$1"; exec "$2" --filter' sh "$FT/filt.pid" "$FHOOK" >"$FT/int.out" 2>&1
+  rc=$?
+  wait "$helper" 2>/dev/null
+  if [ "$rc" = 130 ] && grep -q '^\[filter-test-output\] interrupted after 300 lines; full log: ' "$FT/int.out" \
+    && grep -qx 300 "$FT/int.out" && grep -qx 1 "$FT/int.out"; then
+    fnote ok "INT during slow producer: filtered view, interrupted footer, exit 130"
+  else
+    fnote fail "INT handling" "rc=$rc out=$(tail -2 "$FT/int.out")"
+  fi
+fi
+rm -f "$FT"/filter-test-output.*
+
+case "$FT" in */filter-hook-test.*) rm -rf "$FT" ;; esac
+
 [ "$fail" = 0 ] && echo "All hook checks passed." || { echo "Some hook checks failed."; exit 1; }

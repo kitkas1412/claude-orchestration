@@ -58,6 +58,15 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/filter-test-output.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
