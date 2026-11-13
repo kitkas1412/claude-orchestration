@@ -5,6 +5,7 @@ import json, os, re, subprocess, sys
 ROOT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOME = os.path.expanduser('~')
 TOOLS = {'Agent', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'AskUserQuestion', 'SendMessage', 'EnterWorktree', 'ExitWorktree'}
+WORKTREE_TOOLS = {'EnterWorktree', 'ExitWorktree'}
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -48,6 +49,19 @@ for f in agents:
     for t in [x.strip() for x in str(d.get('tools', '')).split(',')]:
         if t not in TOOLS:
             errors.append('%s: unknown tool %s' % (f, t))
+        elif t in WORKTREE_TOOLS and f != 'orchestrator.md':
+            errors.append('%s: %s is orchestrator-only' % (f, t))
+    if f == 'orchestrator.md':
+        have = [x.strip() for x in str(d.get('tools', '')).split(',')]
+        for t in sorted(WORKTREE_TOOLS):
+            if t not in have:
+                errors.append('%s: missing tool %s' % (f, t))
+    if f == 'release-manager.md' and 'WORKTREE-CHECK' not in body:
+        errors.append('%s: missing WORKTREE-CHECK mode' % f)
+    if f == 'release-manager.md':
+        m = re.search(r"CONVENTIONAL_BRANCH_RE='([^']*)'", open(ROOT + '/hooks/git-publish.sh', encoding='utf-8').read())
+        if not m or '`%s`' % m.group(1) not in body:
+            errors.append('%s: branch regex differs from CONVENTIONAL_BRANCH_RE in hooks/git-publish.sh' % f)
     for s in d.get('skills') or []:
         if not skill_exists(s):
             errors.append('%s: missing skill %s' % (f, s))

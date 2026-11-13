@@ -187,7 +187,7 @@ gh auth status   # the active account is unchanged
 
 ## Running projects in a worktree
 
-Opt-in, per repository. If `.worktreeinclude` exists at the repository root, the orchestrator calls `EnterWorktree` with the name `<type>-<kebab-summary>` (for example `feat-login`) instead of creating a branch. Claude Code creates `.claude/worktrees/<name>/` on branch `worktree-<name>` from the default branch and copies the gitignored files that match `.worktreeinclude`. `release-manager` then runs in WORKTREE-CHECK mode: it verifies the worktree, branch, clean tree and base, and lists the env file names only, never their contents. All later agents work in the worktree. Without `.worktreeinclude`, nothing changes and the branch workflow applies.
+Opt-in, per repository. If `.worktreeinclude` exists at the repository root, the orchestrator calls `EnterWorktree` with the name `<type>-<kebab-summary>` (for example `feat-login`) instead of creating a branch. Claude Code creates `.claude/worktrees/<name>/` on branch `worktree-<name>` from the default branch and copies the gitignored files that match `.worktreeinclude`. `release-manager` then runs in WORKTREE-CHECK mode: it verifies the worktree, clean tree and base, renames the branch to `<type>/<kebab-summary>` (for example `feat/login`) because `git-publish.sh` with style `conventional` refuses `worktree-*` branches (it renames only if the branch has no upstream or tracks `origin/<base>`, and neither name exists on origin; otherwise it reports BLOCKED), and lists the matching env file names only (present names, not proof of copy), never their contents. If the session may start in a subdirectory, the orchestrator finds the repository root first. All later agents work in the worktree. Without `.worktreeinclude`, nothing changes and the branch workflow applies.
 
 `.worktreeinclude` uses `.gitignore` syntax. Only files that match a pattern and are gitignored are copied. Prefer explicit paths: a pattern that begins with `**/` has special rules.
 
@@ -200,7 +200,7 @@ apps/web/.env.local
 - Copies are snapshots. Editing the main `.env` later does not update existing worktrees.
 - Install dependencies inside the worktree.
 - A dev server in the worktree can clash on ports with one running in the main checkout.
-- The worktree and its branch stay after the task. To resume, ask the orchestrator for it or start Claude Code inside it. The orchestrator calls `ExitWorktree` only when you ask, and keeps the worktree unless you ask to remove it and the work is pushed or merged.
+- The worktree and its branch stay after the task. To resume, ask the orchestrator for it or start Claude Code inside it. The orchestrator calls `ExitWorktree` only when you ask, and keeps the worktree unless you ask to remove it and the work is pushed or merged. After a remove the renamed branch remains: delete it with `git branch -d <branch>` yourself (the ExitWorktree message may show the old name).
 - To clean up yourself after the branch is merged, run `git worktree remove <path>` in your own terminal. Agents never run `git worktree add` or `move`.
 - You can create the worktree yourself instead: `claude -w <name> --agent orchestrator`. A session already inside `.claude/worktrees/` always uses WORKTREE mode; for an unrelated new task, start a new session.
 - `.worktreeinclude` and the files it names must exist in the main checkout when the worktree is created.
