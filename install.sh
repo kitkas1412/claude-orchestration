@@ -112,7 +112,7 @@ build_project_stage() {
   ( cd "$REPO/third_party" && find skills -type f -not -name '.DS_Store' | sort ) | while IFS= read -r f; do
     stage_file "$REPO/third_party/$f" "$f"
   done
-  for h in guard-bash.sh guard-write.sh readonly-bash.sh stop-verify-reminder.sh; do
+  for h in guard-bash.sh guard-write.sh readonly-bash.sh stop-verify-reminder.sh filter-test-output.sh; do
     stage_file "$REPO/hooks/$h" "hooks/$h"
   done
   stage_file "$REPO/ORCHESTRATION.md" ORCHESTRATION.md
@@ -247,7 +247,7 @@ list_files | while IFS="$(printf '\t')" read -r src rel; do
   fi
 done
 if [ -n "$PROJECT" ]; then
-  for h in guard-bash.sh guard-write.sh readonly-bash.sh stop-verify-reminder.sh; do
+  for h in guard-bash.sh guard-write.sh readonly-bash.sh stop-verify-reminder.sh filter-test-output.sh; do
     chmod +x "$TARGET/hooks/$h"
   done
 else

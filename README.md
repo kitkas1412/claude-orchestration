@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh` and `stop-verify-reminder.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh` and `filter-test-output.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
 - Never exported: `git-publish.sh` and `apple-design`. No backup is made.
 - The target `CLAUDE.md`, `.claude/worktrees` and `.claude/settings.local.json` are left alone. Settings merge as for `~/.claude`: entries are only added. Running it again is safe and updates the files.
@@ -111,6 +111,21 @@ The safety hooks block direct edits to `~/.claude`, so changes flow one way. Lin
 3. Run `bash install.sh --dry-run`, then `bash install.sh`.
 4. Commit, and add an entry to the changelog in `ORCHESTRATION.md`.
 
+## Token savings
+
+- `hooks/filter-test-output.sh` is a `PreToolUse` hook on Bash. It rewrites only allowlisted test, build and lint commands that contain no shell metacharacters (quotes, `;`, `&`, `|`, `<`, `>`, backtick, `$`, `#`, backslash or newlines): `npm test`, `npm run test|build|lint` (optionally with a `:suffix`, for example `npm run test:unit`), `pnpm test|run test|run build|run lint`, `yarn test|build|lint`, `npx jest|vitest`, `pytest`, `python -m pytest`, `python3 -m pytest`, `go test|build|vet`, `cargo test|build|clippy`, `make test|build|lint|check`, `bash tests/<name>.sh` and `python3 tests/<name>.py`, each with optional simple arguments.
+- The rewritten command has the form `( set -o pipefail; <cmd> 2>&1 | '<hooks dir>/filter-test-output.sh' --filter )`. The command runs in the Bash tool's own shell, so aliases and functions such as `nvm` keep working, and `pipefail` preserves its exit code. The hook script never executes commands; any argument other than `--filter` exits 2.
+- `--filter` shows output of 200 lines or fewer unchanged. Longer output keeps the first 20 lines, lines with failure markers (`FAIL`, `ERROR`, `Traceback`, `panic:`, `panicked at`, TypeScript `error TSnnnn`, ESLint error columns, Mocha `N failing` and similar) with 2 lines of context (capped at 150 lines), and the last 60 lines, then ends with `[filter-test-output] N lines total; full log: PATH`. Printed lines longer than 2000 characters are truncated.
+- The full log is in `${TMPDIR:-/tmp}` with mode 600; the agent can Read it. The stored log is capped at 50 MB (later output is discarded), and this user's logs older than 1 day are deleted on the next run. If no log file can be created, the output passes through unchanged.
+- On interrupt or timeout (`TERM`, `INT`, `HUP`), the filter prints the same view and ends with `interrupted after N lines; full log: PATH`. If the process is killed with `SIGKILL`, no trap runs: the log stays on disk but its path is not printed.
+- The filter waits for end of output, so a command that leaves a background child holding stdout open (for example a test server started by `make test`) now runs until the Bash tool timeout. For such commands set `CLAUDE_FILTER_OUTPUT=0` or run them in the background. Calls with `run_in_background` are never rewritten.
+- It fails open: with `jq` missing or any other problem it changes nothing. It never blocks and never sets `permissionDecision`. `guard-bash.sh` runs in parallel on the original command.
+- Opt out for a session with `CLAUDE_FILTER_OUTPUT=0` in the environment. `install.sh` never removes hook entries, so to disable the hook for good, delete its entry from `~/.claude/settings.json` by hand.
+- Your own allow rules such as `Bash(npm test:*)` may no longer match the rewritten command, so those commands may prompt. Do not add a wildcard allow rule for the wrapper: it would auto-approve any command that pipes into the filter. If prompts are a problem, set `CLAUDE_FILTER_OUTPUT=0` to disable the rewrite.
+- In auto mode, the Claude Code documentation says a rewritten call without a `permissionDecision` can be denied by auto mode. This is not verified in practice; use the opt-out if you see denials.
+- Separately, agent frontmatter sets `effort` to `low` for `explorer`, `test-runner` and `quick-fixer`, and to `medium` for `doc-writer`. `tests/lint.py` accepts `low`, `medium`, `high`, `xhigh` and `max`.
+- `release-manager` no longer preloads the `git-workflow` skill. It reads the skill when it does commit, push, PR or merge work; BRANCH mode does not need it. The publish and merge steps are in `agents/release-manager.md`.
+
 ## Optional browser verification
 
 The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it the agent reports that the UI was not rendered.
@@ -177,6 +192,7 @@ Values in `settings.managed.json` win. Other settings on the machine stay. `perm
 | `multi-stage-dockerfile` | `github/awesome-copilot` | `caab1f6` | MIT |
 | `java-junit` | `github/awesome-copilot` | `52a5840` | MIT |
 | `swift-testing-pro` | `twostraws/swift-testing-agent-skill` | `2d6bba1` | MIT |
+| `find-skills` (preloaded by `skill-scout`) | `vercel-labs/skills` | `d3701c1` | MIT |
 | `gsap-core`, `gsap-timeline`, `gsap-scrolltrigger`, `gsap-plugins`, `gsap-performance`, `gsap-react` | `greensock/gsap-skills` | `aed9cfd` | MIT |
 | `threejs-fundamentals`, `threejs-performance`, `threejs-loaders`, `threejs-react-three-fiber`, `threejs-shaders`, `threejs-postprocessing`, `threejs-materials`, `threejs-textures`, `threejs-lighting`, `threejs-animation`, `threejs-interaction`, `threejs-geometry` | `CloudAI-X/threejs-skills` | `0e18186` | MIT |
 
@@ -187,7 +203,6 @@ These are exact copies of the reviewed text. Review an upstream change before re
 - Claude Code sign-in and credentials
 - MCP connections and plugins
 - Skills synced from claude.ai, which arrive with your account
-- `find-skills`, which is only needed to search for new skills
 - Session history and project memory
 
 ## Privacy
