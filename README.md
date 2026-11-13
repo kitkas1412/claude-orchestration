@@ -135,7 +135,7 @@ The `browser-verification` skill lets `ui-ux-engineer` look at a locally served 
 Off by default. The level is per repository and is stored in `~/.claude/git-publish.registry`: `commit`, `push`, `pr` or `merge`, each including the previous. Project files can never grant a level. Only you register a level, with `enable` in your own terminal (the script asks for a TTY and for the repo name; the guards are best-effort and only block common ways for an agent to run it):
 
 ```bash
-~/.claude/hooks/git-publish.sh enable <commit|push|pr|merge> [--style conventional|project] [--allow-ci-changes]
+~/.claude/hooks/git-publish.sh enable <commit|push|pr|merge> [--style conventional|project] [--allow-ci-changes] [--account <login>]
 ~/.claude/hooks/git-publish.sh disable
 ```
 
@@ -158,10 +158,32 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 - PRs are always drafts, GitHub only, on remote `origin`. Force, tags, refspecs and protected branches (main, master, develop, trunk, production, `release/*`) are refused. With style `conventional`, branches must be `<type>/<kebab-summary>` and commit subjects and PR titles must follow Conventional Commits (merge commits are exempt; `Revert "..."` is accepted for commit subjects). PR bodies need `## What`, `## Why`, `## How tested` and `## Risks`. Style `project` skips these format checks.
 - Every commit since the merge-base is scanned on its own, so a secret added and later removed is still refused. Forbidden files include `.env*` (except `.env.example`, `.sample`, `.template`, `.dist`), keys, `*.tfvars` and `*.tfstate`.
 - Repo hooks (pre-push, husky, gitleaks) do not run on this route, because a repo hook would run with your credentials. `plan` warns when a pre-push hook exists. Git LFS repositories are refused. Repo-local `core.sshCommand`-style overrides, `credential.*`, `url.*`, `protocol.*` and most `http.*` settings are refused (allowed: `http.postBuffer`, `lowSpeedLimit`, `lowSpeedTime`, `version`, `maxRequests`).
+- Clean environment, for every row: the script re-runs itself through `env -i` under `bash -p`, keeping only an allowlist: `USER`, `LOGNAME`, locale (`LANG`, `LC_*`), `TERM`, `TMPDIR`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, proxy variables, `GH_TOKEN`/`GITHUB_TOKEN`, `CLAUDE_CODE_REMOTE`, `GIT_CEILING_DIRECTORIES` and the cloud CA variables. Exported shell functions, `BASH_ENV`, trace and debug variables and any other variable from the caller do not reach `gh` or `git`. `TMPDIR` must be an absolute path. `XDG_RUNTIME_DIR` is kept only if it is exactly `/run/user/<uid>`, a directory owned by you that group and others cannot write, and `DBUS_SESSION_BUS_ADDRESS` only if it is exactly `unix:path=<that directory>/bus` (optionally `,guid=<hex>`); any other value is dropped (on macOS both are always dropped, which `osxkeychain` does not need). Running the script as `bash -s`, `bash < script` or `bash -c "$(cat script)"` is refused with "run the script by its path".
+- The check that refuses a global `insteadOf`/`pushInsteadOf` rule that would rewrite the registered URL again now runs in every preflight (`plan`, `push`, `pr`, `merge`) and in `enable`, before any network call, not only at push time. On the local backend, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `CURL_CA_BUNDLE` are always dropped, so a TLS-inspecting corporate proxy that needs them does not work here. `core.askPass` is forced empty, so `SSH_ASKPASS` and any configured askpass program are never run; credentials must come from ssh-agent or a credential helper.
 - The guards are a best-effort regex layer. They stop accidents and common command forms from careless or injected agents, and known forms can still get through. They are not a boundary against code run deliberately under your OS user. A deliberately evasive agent can still bypass the guards and grant itself a level, because regex cannot close this. Repositories at level `merge` therefore need branch protection with required status checks. To search for guarded text, use the Grep tool or a plain leading `grep`.
 - The hooks fail closed: `guard-bash.sh`, `guard-write.sh` and `readonly-bash.sh` block when `jq` is missing or their input JSON is malformed. `guard-bash.sh` also blocks `curl -o`, `wget -O` or `-P`, `tar -x -C`, `unzip -d`, `git checkout`, `git restore` and `patch` that target a project's `.claude/hooks`, `.claude/settings*.json`, `.claude/rules` or `.claude/agents`; top-level `agents/` and `skills/` directories are not affected. Known gaps: `git apply`, `patch -p0 < file` and interpreter writes.
 - Blocked for all projects: direct `gh pr create|new|ready|edit|merge`, `gh api` writes, `gh repo create|sync`, `gh release upload|edit`, `gh workflow run`, `gh secret set`, `gh extension install`, `gh auth token`, `git credential fill`, and agent writes to `~/.gitconfig` and `~/.claude/hooks`. `gh pr comment|close` and `gh issue` stay allowed.
 - Check it with `bash tests/test-git-publish.sh`.
+
+### Multiple GitHub accounts
+
+By default, `git-publish.sh` uses the account that `gh` has active, so you had to run `gh auth switch` between repositories owned by different accounts. `enable ... --account <login>` stores a GitHub login for one repository (optional 7th column of the registry). Only you set it, with `enable` in your own terminal; agents cannot run `enable`.
+
+```bash
+~/.claude/hooks/git-publish.sh enable pr --account <login>
+gh auth status   # the active account is unchanged
+~/.claude/hooks/git-publish.sh status   # prints account: <login>
+```
+
+- `enable` refuses when: the level is `commit`; the push URL is not `https://github.com/...` (SSH remotes are refused: switch `origin` to HTTPS); `gh` is older than 2.40 (no `gh auth token --user`); the account is not logged in; the token belongs to another account; or the account has no push access to the repository.
+- Re-running `enable` without `--account` clears it (nothing is inferred). `status` prints `account: <login>`, `active` (registered, no account) or `-` (not registered).
+- At run time, `push`, `pr`, `merge` and `ci` fetch the account token once with `gh auth token --user` and check it with `gh api user`. The token goes to each `gh` call through `GH_TOKEN`, and to `git push` and `ls-remote` through a credential helper scoped to `https://github.com` that reads an environment variable. It is not exported to your session, not put on a command line and not printed. A `GH_TOKEN`/`GITHUB_TOKEN` from the caller is ignored in account mode.
+- A failure stops with a message naming the account. There is no fallback to the active `gh` account.
+- Rows without an account behave as before, and a caller `GH_TOKEN` still passes through.
+- Cloud backend: the account does not apply, and a cloud `github:` row with an account is treated as unregistered.
+- Downgrade: an older `git-publish.sh` treats a 7-column row as unregistered (fails closed), and an older `enable` rewrites the row without the account.
+- In account mode, git uses no credential helper other than the account's (the helper list is reset for every URL), the session bus variables reach only the `gh auth token` keyring call, proxy variables that contain a user name are dropped, and `gh` runs from `/` so that git filters configured in the repository never run with the token in their environment. Repo-local `filter.*` and `submodule.*.update` settings are refused for a repository with an account (for example git-crypt or nbstripout filters); other `submodule.*` settings stay allowed, and repositories without an account are not affected.
+- Residual exposure: these guards are best-effort, not a security boundary. An agent running as your user that can run commands in the background can read the token while `gh` or `git` run (for example with `ps eww`, which shows their environment). It can also read it from `gh`'s own keychain item or config file. The forced `PATH` includes `/opt/homebrew/bin` and `/usr/local/bin`, which your user can write, so such an agent could also replace `gh` or `git` there; this is the same class of exposure. Running the script as `bash <script>` with a `BASH_ENV` file, or with exported `exec`, `builtin` or `command` functions, runs that code before the script can re-run itself (closing this needs a `guard-bash.sh` rule, a planned follow-up).
 
 ## Layout
 
