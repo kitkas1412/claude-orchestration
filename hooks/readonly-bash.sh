@@ -2,8 +2,9 @@
 # Allowlist guard for read-only agents. Exit code 2 = block the Bash call.
 # Defense-in-depth, NOT a sandbox. Requires jq.
 set -f
+command -v jq >/dev/null 2>&1 || { echo "BLOCKED: jq is required by readonly-bash" >&2; exit 2; }
 INPUT=$(cat)
-CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
+CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty') || { echo "BLOCKED: readonly-bash could not parse its JSON input" >&2; exit 2; }
 [ -z "$CMD" ] && exit 0
 
 block() { echo "Blocked by readonly-bash: $1" >&2; exit 2; }

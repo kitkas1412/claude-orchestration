@@ -5,7 +5,14 @@
 !.env.example
 *.pem
 *.key
-.claude/
+.claude/*
+!.claude/agents/
+!.claude/skills/
+!.claude/hooks/
+!.claude/rules/
+!.claude/settings.json
+!.claude/ORCHESTRATION.md
+!.claude/.orchestration-manifest
 node_modules/
 *.tgz
 *.local.md

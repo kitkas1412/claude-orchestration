@@ -17,7 +17,90 @@ The first command shows what would change. The second backs up `~/.claude` and i
 
 Then sign in to Claude Code and check `/status` and `/agents`.
 
-Add `--no-apple-design` to skip the optional `apple-design` clone.
+Add `--no-apple-design` to skip the optional `apple-design` clone, and `--no-backup` to skip the backup of `~/.claude`.
+
+`--project <repo>` exports into a repository instead; see "Run in Claude Code cloud".
+
+## Run in Claude Code cloud
+
+Claude Code on the web (claude.ai/code) does not have your `~/.claude`. It loads only the `.claude/` files committed in the repository. There are two routes, and you can use both.
+
+### Route A: export into the repository
+
+Run it yourself in your terminal (the guards block agents from writing `.claude/hooks` and settings). Needs `jq`, `git` and `bash`.
+
+```bash
+bash install.sh --project <repo> --dry-run
+bash install.sh --project <repo> [--set-agent]
+```
+
+`<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
+
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh` and `stop-verify-reminder.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
+- Never exported: `git-publish.sh` and `apple-design`. No backup is made.
+- The target `CLAUDE.md`, `.claude/worktrees` and `.claude/settings.local.json` are left alone. Settings merge as for `~/.claude`: entries are only added. Running it again is safe and updates the files.
+- `--set-agent` adds `"agent": "orchestrator"`, so the orchestrator is the main agent. This also applies to local sessions in that repository.
+- Locally, both `~/.claude` and the project guards run. The duplication is harmless. A project agent overrides a user agent of the same name.
+- Do not edit the exported files by hand. Change the source here and export again.
+- Refused: a symlink under `<repo>/.claude` (the target itself, `settings.json`, `ORCHESTRATION.md`, `.orchestration-manifest`, or anything inside `agents/`, `skills/`, `hooks/`, `rules/`), and a target `settings.json` with `disableAllHooks: true`. Existing `permissions.allow` entries, `permissions.defaultMode: bypassPermissions` and hooks not managed by the export are kept and listed as a WARNING.
+- The `init-project-orchestration` skill drafts project agents (and rules) into `<repo>/.claude-draft/` because the guards block agents from writing `.claude/agents/**`; it prints the commands for you to move them after review.
+- Extra `permissions.deny` entries (from `project/settings.project.json`) cover Edit and Write on `.claude/hooks/**`, `settings.json`, `settings.local.json`, `rules/**`, `agents/**` and `skills/**`.
+- Lines about `apple-design` are not rewritten, and `apple-design` is not exported.
+- The export never deletes files that were removed upstream. `bash tests/check-project-export.sh` compares the git-tracked `.claude` files with a fresh export and reports files missing on either side.
+
+### Route B: user-level install in the cloud environment (experimental)
+
+`cloud/setup.sh` installs this setup into `/root/.claude` in the cloud environment, including `git-publish.sh`, and registers the repositories you grant. Whether Claude Code in the cloud loads hooks from `/root/.claude` is unverified, so use it together with Route A.
+
+1. Push your reviewed commit of this repository and get its SHA: `git rev-parse HEAD`.
+2. Copy `cloud/setup.sh`. Set `REF` to that full 40-hex SHA. While `REF` is the placeholder, or not a 40-hex SHA, the script installs nothing and prints a WARNING. Change `REPO_URL` if you use a fork.
+3. Fill `GRANTS`, one line per repository: `owner/repo level [default_branch] [style] [ci]`.
+   - `level` is `commit`, `push`, `pr` or `merge`. `style` is `conventional` (default) or `project`. `ci` is `ci` to allow CI file changes, or `-` (default) to refuse them.
+   - An omitted `default_branch` is read anonymously with `git ls-remote`, which works for public repositories only. If it fails, the grant is skipped with a WARNING. At level `commit` it is stored as `-`.
+   - Blank lines and lines starting with `#` are ignored. Invalid lines are skipped with a WARNING. A second grant for the same repository is skipped with a WARNING; slugs compare case-insensitively.
+4. Paste the whole file into the environment's setup script at claude.ai/code and save.
+
+On every run the script first replaces an existing registry with an empty one, before any check, clone or install, so any later failure leaves zero grants (fail closed). If the registry path is a symlink or not a regular file, it is left untouched and no grants are registered. Then it runs `install.sh --no-backup --no-apple-design` with `HOME=/root` (`TARGET_HOME`) and rewrites `/root/.claude/git-publish.registry` completely from `GRANTS`, with mode 600. It always exits 0 and reports problems as WARNING lines. Grants come only from this text, never from a repository, an environment variable or the network.
+
+To revoke, remove the line from `GRANTS` and save. The environment snapshot is rebuilt without it; running sessions keep the old file until they end.
+
+### Publishing in cloud
+
+- With `CLAUDE_CODE_REMOTE=true`, `git-publish.sh` uses a REST backend (`gh api`), because the cloud GitHub proxy blocks GraphQL. `status` ends with `backend: local` or `backend: cloud-rest`.
+- Only `github:<owner>/<repo>` registry rows (written by Route B) count in cloud, and only local path rows count locally. Setting the variable elsewhere finds no row, so it cannot raise a level.
+- `enable` and `disable` still need a TTY and never write `github:` rows.
+- At level `merge`, `pr` opens the PR ready for review. At level `pr` it opens a draft. In cloud, `merge --mark-ready-only` refuses: click Ready for review on GitHub, then run `ci --pr <n> --after-ready`.
+- `merge` sends the expected head SHA, and GitHub refuses it with a 409 if the head moved.
+- Without Route B there is no `git-publish.sh` in the cloud, so publishing is not available.
+- The loopback proxy is reachable by the agent, so the checks use the GitHub API instead of the remote: the base SHA comes from `git/ref/heads/<branch>`, and `merge` takes the PR changed-files list from `pulls/<n>/files`. Either one refuses on failure, and the file list also refuses at 3000 or more files (GitHub truncates it). After the push, `pr` checks that the branch head on GitHub equals the pushed SHA, and the PR URL it gets back must be `https://github.com/<slug>/pull/<n>`.
+- `push` goes to the verified URL, not to the `origin` name, so it does not update `refs/remotes/origin/<branch>`. The repository slug matches case-insensitively, and two registry rows for the same slug refuse.
+- In cloud, `push` also needs an authenticated `gh` and `jq`, because the base comes from the GitHub API. A repository whose default branch does not exist on GitHub yet (an empty repository) is refused (fail closed).
+- `git-publish.sh` refuses a push if git's URL rewriting (`url.<base>.insteadOf` or `pushInsteadOf`) would change the verified URL.
+- If `cloud/setup.sh` cannot empty the registry, it removes it, and it warns `REVOKE FAILED` only if that also fails.
+
+### Security model
+
+Publish levels and the guard hooks are a workflow guardrail, not a security boundary. A prompt-injected agent runs as the same OS user (root in cloud) that owns the registry and the hooks. It can bypass regex guards, for example with interpreter writes or `git apply`, and edit the registry or the hooks. Known guard gaps (accepted): `git apply`, `git checkout-index`, `patch -p0 < file` and interpreter writes. The real boundary is GitHub: branch protection or rulesets with required status checks, and required reviews where possible. In cloud, grant `merge` only for protected or low-stakes repositories; prefer `pr`.
+
+### Cloud limits
+
+- Not yet tested: a REST merge through the cloud proxy.
+- Unverified: whether the check on repository git config refuses when the cloud adds `http.*`, `credential.*` or `url.*` entries; the format of the proxy origin URL; that `HOME` is `/root`.
+- `~/learning` (teacher notes) does not persist between cloud sessions.
+- `apple-design` is not available in cloud.
+
+### Smoke test
+
+Run once in a cloud session, through Claude's Bash tool, on a throwaway repository with one CI workflow, granted `merge`, and a second granted `pr`:
+
+1. `id -un; echo "$HOME"; tty || true`
+2. Show the `origin` URL with any userinfo masked, then `git config --local --name-only --list`.
+3. `~/.claude/hooks/git-publish.sh status` shows the level and `backend: cloud-rest`.
+4. A plain `git push` is blocked. A repository you did not grant says it is not registered.
+5. Commit on a conventional branch, run `plan`, then `push`.
+6. `pr` opens a ready PR at level `merge` and a draft at level `pr`. `merge --mark-ready-only` refuses.
+7. `ci`, then `merge` with the expected SHA. This is the first live test of the REST merge.
 
 ## Change the setup
 
@@ -47,7 +130,7 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 - With the title and body files, `plan` prints the PR title, a body preview and a content SHA-256. If the title or body changed after `plan`, `pr` refuses. `plan` is offline, but `push` and `pr` may ask for a fetch first.
 - `pr` opens a draft. `merge` needs: the PR open, its head is the current non-protected branch at that SHA, its base is the registered default branch, not cross-repo, title and body pass the checks, and CI has at least one SUCCESS check, none failing, none pending (only SKIPPED or NEUTRAL checks, or no CI, are refused; use level `pr` there). `merge` also checks PR body headings under style `conventional`. It squash merges with the validated PR title as subject. It never uses `--admin` or `--auto` and does not delete the branch.
 - Merge is separate steps. `ci --pr <n>` is read-only (level `merge`) and prints `verdict: passed|failed|pending|none|skipped-only`, `skipped: <names or ->`, `draft: true|false`, `url: <PR url>` and `head: <40-hex SHA>` (take the SHA of an existing PR from this line). If the PR is a draft, `merge --mark-ready-only --pr <n> --expect-sha <sha>` marks it ready and exits 0 without merging; it refuses (exit 2) if the PR is not a draft or a check is failing, and the approved plan is enough for it. In the run that marked the PR ready, read `ci --pr <n> --after-ready`, which prints any skipped check, or no checks, as `pending` because draft-gated jobs may not have restarted; later re-checks omit the flag (`merge` has no such flag). The merging run, `merge --pr <n> --expect-sha <sha>`, refuses a draft (exit 2) and never marks it ready. It runs only after you confirm the PR link and a `passed` verdict. Your GitHub workflows should include the `ready_for_review` trigger so CI runs once the draft is marked ready.
-- CI files (`.github/workflows/**`, `.github/actions/**`, `CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`, including deletions): `merge` always refuses commits touching them. `push`, `pr` and `plan` refuse them unless you ran `enable ... --allow-ci-changes`; only `enable` can set it, re-running `enable` without the flag resets it to refused, and `status` prints `ci changes: allowed|refused`. A merge commit that brings a CI-file change from the default branch is refused by `merge`; with `--allow-ci-changes`, `push`, `pr` and `plan` allow it. Rebasing an already-pushed branch needs a force push, which this route refuses: use a new branch or handle it yourself.
+- CI and policy files (`.github/workflows/**`, `.github/actions/**`, `CODEOWNERS`, `.github/CODEOWNERS`, `docs/CODEOWNERS`, `.claude/**` at any depth, `CLAUDE.md`, `CLAUDE.local.md` and `.mcp.json` at any depth, including deletions; names compare case-insensitively): `merge` always refuses commits touching them, so merge such PRs by hand, including routine re-export PRs. Files that `CLAUDE.md` imports with `@path` are not treated as policy files. `push`, `pr` and `plan` refuse them unless you ran `enable ... --allow-ci-changes`; only `enable` can set it, re-running `enable` without the flag resets it to refused, and `status` prints `ci changes: allowed|refused`. A merge commit that brings a CI-file change from the default branch is refused by `merge`; with `--allow-ci-changes`, `push`, `pr` and `plan` allow it. Rebasing an already-pushed branch needs a force push, which this route refuses: use a new branch or handle it yourself.
 - Shallow repositories are refused.
 - `push`, `pr` and `merge` refuse with "fetch it first" if the remote default branch has commits not fetched locally. After a merge, `git fetch` before the next publish.
 - Approval: Claude pushes and opens a PR after verification only if the plan you approved in the conversation explicitly includes those steps, and reports the SHA afterwards. For merge, the orchestrator asks you once, when the `ci` verdict is `passed`, showing the PR link, the verdict and any skipped check names, before `release-manager` runs the merging step. If CI is pending it tells you and ends the turn; on `skipped-only`, `none` or `failed` it reports that merge will be refused. There is no technical enforcement of conversation approval; it is a rule the agents follow.
@@ -60,6 +143,7 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 - Every commit since the merge-base is scanned on its own, so a secret added and later removed is still refused. Forbidden files include `.env*` (except `.env.example`, `.sample`, `.template`, `.dist`), keys, `*.tfvars` and `*.tfstate`.
 - Repo hooks (pre-push, husky, gitleaks) do not run on this route, because a repo hook would run with your credentials. `plan` warns when a pre-push hook exists. Git LFS repositories are refused. Repo-local `core.sshCommand`-style overrides, `credential.*`, `url.*`, `protocol.*` and most `http.*` settings are refused (allowed: `http.postBuffer`, `lowSpeedLimit`, `lowSpeedTime`, `version`, `maxRequests`).
 - The guards are a best-effort regex layer. They stop accidents and common command forms from careless or injected agents, and known forms can still get through. They are not a boundary against code run deliberately under your OS user. A deliberately evasive agent can still bypass the guards and grant itself a level, because regex cannot close this. Repositories at level `merge` therefore need branch protection with required status checks. To search for guarded text, use the Grep tool or a plain leading `grep`.
+- The hooks fail closed: `guard-bash.sh`, `guard-write.sh` and `readonly-bash.sh` block when `jq` is missing or their input JSON is malformed. `guard-bash.sh` also blocks `curl -o`, `wget -O` or `-P`, `tar -x -C`, `unzip -d`, `git checkout`, `git restore` and `patch` that target a project's `.claude/hooks`, `.claude/settings*.json`, `.claude/rules` or `.claude/agents`; top-level `agents/` and `skills/` directories are not affected. Known gaps: `git apply`, `patch -p0 < file` and interpreter writes.
 - Blocked for all projects: direct `gh pr create|new|ready|edit|merge`, `gh api` writes, `gh repo create|sync`, `gh release upload|edit`, `gh workflow run`, `gh secret set`, `gh extension install`, `gh auth token`, `git credential fill`, and agent writes to `~/.gitconfig` and `~/.claude/hooks`. `gh pr comment|close` and `gh issue` stay allowed.
 - Check it with `bash tests/test-git-publish.sh`.
 
@@ -75,6 +159,9 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 | `third_party/skills/` | `~/.claude/skills/` | Reviewed copies of external skills |
 | `third_party/licenses/` | Not installed | Licenses for those skills |
 | `settings.managed.json` | Merged into `~/.claude/settings.json` | Permissions, hooks and model |
+| `project/` | Not installed | Inputs for `install.sh --project`: rules preamble and project settings |
+| `cloud/setup.sh` | Not installed | Experimental setup script for the cloud environment |
+| `.claude/` | Not in the repository by default | Optional export, generated with `bash install.sh --project .` and committed by you; do not edit; check with `bash tests/check-project-export.sh` |
 | `tests/` | Not installed | Lint, hook and install checks |
 | `bin/cli.js`, `package.json` | Not installed | `npx` entry point |
 
