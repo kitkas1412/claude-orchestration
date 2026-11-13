@@ -63,10 +63,22 @@ resolve_home() {
 
 RESOLVED_HOME=$(resolve_home) || exit 2
 REGISTRY="$RESOLVED_HOME/.claude/git-publish.registry"
+# gh and git read their user config from the passwd home, never from a caller-chosen HOME.
+# HTTPS_PROXY and SSL_CERT_* stay: the cloud session's egress proxy may need them.
+HOME=$RESOLVED_HOME
+GH_CONFIG_DIR="$RESOLVED_HOME/.config/gh"
+export HOME GH_CONFIG_DIR
 
 require_tty() {
   [ -t 0 ] && [ -t 1 ] && (: </dev/tty) 2>/dev/null || die "this command must be run by the user in their own terminal"
 }
+
+# Claude Code on the web blocks GraphQL, so pr, merge and ci use the REST API there. The cloud backend
+# honors only `github:<owner>/<repo>` registry rows, so setting the variable elsewhere finds no row.
+BACKEND=local
+if [ "${CLAUDE_CODE_REMOTE:-}" = true ]; then
+  BACKEND=cloud-rest
+fi
 
 # --- patterns ---
 CONVENTIONAL_RE='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()[:space:]]+\))?!?: [^[:space:]].*$'
@@ -172,6 +184,8 @@ require_pr_number() {
 
 # --- registry: TSV of git-common-dir realpath, push URL, level, default branch, style, CI changes ---
 # The CI changes column is `ci` or `-`; a row without it (five columns) means not allowed.
+# Cloud rows (cloud-rest backend only) are `github:<owner>/<repo>`, `-`, level, default branch, style, CI changes;
+# the local backend never honors them, and enable/disable never write them.
 R_KEY=""
 R_URL=""
 R_LEVEL=off
@@ -187,9 +201,11 @@ repo_key() {
 
 registry_lookup() {
   local k u l d s c
+  [ "$BACKEND" = local ] || { cloud_registry_lookup; return; }
   R_KEY=$(repo_key) || return 1
   [ -n "$R_KEY" ] && [ -f "$REGISTRY" ] && [ ! -L "$REGISTRY" ] || return 1
   while IFS=$'\t' read -r k u l d s c || [ -n "$k" ]; do
+    case "$k" in github:*) continue ;; esac
     [ "$k" = "$R_KEY" ] || continue
     case "$l" in commit|push|pr|merge) ;; *) return 1 ;; esac
     case "$s" in conventional|project) ;; *) return 1 ;; esac
@@ -203,6 +219,35 @@ registry_lookup() {
     return 0
   done <"$REGISTRY"
   return 1
+}
+
+# Cloud rows are keyed by the slug derived from origin. R_URL is the live origin push URL, so
+# check_remote_identity still refuses a push URL that changed after the lookup.
+# GitHub owner and repository names are case-insensitive, so the key is too; two matching rows are ambiguous.
+cloud_registry_lookup() {
+  local k u l d s c want found=0 row=""
+  cloud_origin || return 1
+  R_KEY="github:$REPO_SLUG"
+  want=$(lower "$R_KEY")
+  [ -f "$REGISTRY" ] && [ ! -L "$REGISTRY" ] || return 1
+  while IFS=$'\t' read -r k u l d s c || [ -n "$k" ]; do
+    [ "$(lower "$k")" = "$want" ] || continue
+    found=$((found + 1))
+    [ "$found" -eq 1 ] || die "more than one github: registry row matches this repository; the user must remove the duplicate"
+    row=$k$'\t'$u$'\t'$l$'\t'$d$'\t'$s$'\t'$c
+  done <"$REGISTRY"
+  [ "$found" -eq 1 ] || return 1
+  IFS=$'\t' read -r k u l d s c <<<"$row"
+  matches "${k#github:}" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' || return 1
+  [ "$u" = - ] || return 1
+  case "$l" in commit|push|pr|merge) ;; *) return 1 ;; esac
+  case "$s" in conventional|project) ;; *) return 1 ;; esac
+  case "$c" in ""|-|ci) ;; *) return 1 ;; esac
+  if [ "$l" != commit ] || [ "$d" != - ]; then
+    matches "$d" "$SAFE_BRANCH_RE" || return 1
+  fi
+  R_URL=$CLOUD_URL R_LEVEL=$l R_DEFAULT=$d R_STYLE=$s R_CI=${c:--}
+  return 0
 }
 
 # Copy every row except this repository's to stdout.
@@ -268,11 +313,57 @@ parse_github() {
   REPO_SLUG=$rest
 }
 
+# Cloud backend only: the session's loopback git proxy, http(s)://[userinfo@]host[:port]/git/<owner>/<repo>[.git].
+# The URL may embed userinfo, so it is never printed; only the slug is.
+parse_cloud_proxy() {
+  local rest
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq -- '^https?://([^/@?#[:space:]]+@)?(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?/git/[^/?#[:space:]]+/[^/?#[:space:]]+$' || return 1
+  rest=${1#*://}
+  rest=${rest#*/git/}
+  rest=${rest%.git}
+  matches "$rest" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' || return 1
+  case "$rest" in */.|*/..) return 1 ;; esac
+  REPO_SLUG=$rest
+}
+
+# Cloud backend only: exactly one origin push URL, in a github.com form or the loopback proxy form.
+CLOUD_URL=""
+cloud_origin() {
+  local urls
+  urls=$(git remote get-url --push --all origin 2>/dev/null) || return 1
+  [ -n "$urls" ] && [ "$(printf '%s\n' "$urls" | wc -l)" -eq 1 ] || return 1
+  matches "$urls" '[[:cntrl:]]' && return 1
+  parse_github "$urls" || parse_cloud_proxy "$urls" || return 1
+  CLOUD_URL=$urls
+}
+
+# Sets REPO_SLUG for pr, merge and ci. The cloud slug was derived from origin by the registry lookup.
+resolve_slug() {
+  if [ "$BACKEND" = cloud-rest ]; then
+    [ -n "$REPO_SLUG" ] && [ "$R_KEY" = "github:$REPO_SLUG" ]
+  else
+    parse_github "$R_URL"
+  fi
+}
+
 # Output is empty when the branch does not exist on the remote; non-zero on network failure.
 remote_branch_sha() {
   local ref="refs/heads/$1" out
   out=$(git ls-remote -- "$R_URL" "$ref" 2>/dev/null) || return 1
   printf '%s\n' "$out" | awk -v ref="$ref" '$2 == ref {print $1; exit}'
+}
+
+# Cloud backend only: the loopback proxy is reachable by the agent, so branch tips that the checks rely on
+# come from the GitHub REST API instead. Prints the 40-hex commit SHA; non-zero on any failure or odd shape.
+cloud_ref_sha() {
+  local out
+  command -v gh >/dev/null 2>&1 || die "gh is not installed"
+  command -v jq >/dev/null 2>&1 || die "jq is not installed"
+  out=$(gh api "repos/$REPO_SLUG/git/ref/heads/$1" 2>/dev/null) || return 1
+  out=$(printf '%s' "$out" | jq -er --arg r "refs/heads/$1" \
+    'select(type == "object" and .ref == $r and (.object | type) == "object" and .object.type == "commit") | .object.sha | strings' 2>/dev/null) || return 1
+  matches "$out" '^[0-9a-f]{40}$' || return 1
+  printf '%s\n' "$out"
 }
 
 # --- preflight ---
@@ -330,7 +421,11 @@ check_lfs() {
 compute_base() {
   local mode=$1 tip="" remote
   if [ "$mode" = online ]; then
-    remote=$(remote_branch_sha "$R_DEFAULT") || die "cannot read the default branch from the registered remote"
+    if [ "$BACKEND" = cloud-rest ]; then
+      remote=$(cloud_ref_sha "$R_DEFAULT") || die "cannot read the default branch from GitHub"
+    else
+      remote=$(remote_branch_sha "$R_DEFAULT") || die "cannot read the default branch from the registered remote"
+    fi
     if [ -n "$remote" ]; then
       git cat-file -e "$remote^{commit}" 2>/dev/null || die "default branch on the remote is newer than local history; fetch it first"
       tip=$remote
@@ -430,9 +525,13 @@ is_forbidden_name() {
   return 1
 }
 
+# CI/policy files: workflows and CODEOWNERS decide what a green merge means; Claude Code config
+# (.claude/, CLAUDE.md, CLAUDE.local.md, .mcp.json) decides what agents run and may do in this repository.
 is_ci_path() {
   case "$(lower "$1")" in
     .github/workflows|.github/workflows/*|.github/actions|.github/actions/*|codeowners|.github/codeowners|docs/codeowners) return 0 ;;
+    .claude|.claude/*|*/.claude|*/.claude/*) return 0 ;;
+    claude.md|*/claude.md|claude.local.md|*/claude.local.md|.mcp.json|*/.mcp.json) return 0 ;;
   esac
   return 1
 }
@@ -664,11 +763,30 @@ abs_path() {
   printf '%s/%s\n' "$dir" "$(basename -- "$1")"
 }
 
+# R_URL already went through insteadOf/pushInsteadOf (git remote get-url --push), and git applies them again to a
+# URL given to push. A chain in global or system config (A to B, B to C) would send the push to an unchecked C.
+# `git -c remote.X.url=... remote get-url` cannot test this (it only knows remotes from repository config), so
+# refuse when any rewrite prefix still matches R_URL. The URL is never printed: it may carry userinfo.
+check_no_second_rewrite() {
+  local rec prefix
+  while IFS= read -r -d '' rec; do
+    prefix=${rec#*$'\n'}
+    case "$R_URL" in "$prefix"*) die "a git url.*.insteadOf or pushInsteadOf rule would rewrite the push URL again; remove the chained rule" ;; esac
+  done < <(git config -z --get-regexp '^url\..*\.(insteadof|pushinsteadof)$' 2>/dev/null)
+  return 0
+}
+
+# Pushes to the verified URL itself, not to `origin`, so remote config is not read again after the checks.
+# git may echo the URL; any userinfo in it is masked before the output reaches the caller (on stderr).
 do_push() {
-  local b=$BRANCH
+  local b=$BRANCH rc
   check_remote_identity
+  check_no_second_rewrite
   [ "$(git rev-parse --quiet --verify "refs/heads/$b^{commit}")" = "$HEAD_SHA" ] || die "branch moved during preflight"
-  git push --no-follow-tags --recurse-submodules=no origin "$HEAD_SHA:refs/heads/$b"
+  git push --no-follow-tags --recurse-submodules=no -- "$R_URL" "$HEAD_SHA:refs/heads/$b" 2>&1 \
+    | LC_ALL=C sed -e 's#://[^/@[:space:]]*@#://***@#g' >&2
+  rc=${PIPESTATUS[0]}
+  return "$rc"
 }
 
 # --- subcommands ---
@@ -681,6 +799,7 @@ cmd_status() {
   else
     printf 'level: off\nstyle: -\ndefault branch: -\nci changes: refused\n'
   fi
+  printf 'backend: %s\n' "$BACKEND"
 }
 
 cmd_plan() {
@@ -692,7 +811,7 @@ cmd_plan() {
   fi
   preflight "$need" offline ""
   if [ "$need" = pr ]; then
-    parse_github "$R_URL" || die "pull requests are supported on github.com only"
+    resolve_slug || die "pull requests are supported on github.com only"
     check_pr_text "$OPT_TITLE" "$OPT_BODY"
   fi
   run_standards
@@ -749,7 +868,7 @@ cmd_pr() {
   matches "$OPT_CONTENT" '^[0-9a-f]{64}$' || die "--expect-content must be the 64-hex SHA-256 printed by plan"
   command -v gh >/dev/null 2>&1 || die "gh is not installed"
   preflight pr online "$OPT_EXPECT"
-  parse_github "$R_URL" || die "pull requests are supported on github.com only"
+  resolve_slug || die "pull requests are supported on github.com only"
   check_pr_text "$OPT_TITLE" "$OPT_BODY"
   run_standards
   stop_if_refused
@@ -761,6 +880,13 @@ cmd_pr() {
     do_push || exit $?
     remote=$(remote_branch_sha "$BRANCH") || die "cannot read the branch from the registered remote"
     [ "$remote" = "$HEAD_SHA" ] || die "remote branch is not at --expect-sha after the push"
+  fi
+  if [ "$BACKEND" = cloud-rest ]; then
+    # The loopback proxy answered above; GitHub itself must agree before the PR is opened.
+    remote=$(cloud_ref_sha "$BRANCH") || die "cannot read the branch from GitHub"
+    [ "$remote" = "$HEAD_SHA" ] || die "branch on GitHub is not at --expect-sha after the push"
+    cloud_pr_create
+    return
   fi
   gh pr create --draft --repo "$REPO_SLUG" --base "$R_DEFAULT" --head "$BRANCH" --title "$TITLE_VALUE" --body-file "$BODY_COPY"
 }
@@ -803,6 +929,99 @@ PR_CI_SHAPE='length == 1 and (.[0] | type == "object"
   and (.isDraft | type) == "boolean" and (.url | type) == "string" and (.headRefOid | type) == "string"
   and ((.statusCheckRollup | type) == "array" or .statusCheckRollup == null))'
 
+# --- cloud-rest backend: REST equivalents of gh pr create/view/merge (GraphQL is blocked there) ---
+# A merge-level repo cannot mark a draft ready in the cloud, so its pull requests open as ready.
+cloud_pr_create() {
+  local draft=true resp url rest num bad="gh returned an unexpected pull request response"
+  [ "$R_LEVEL" = merge ] && draft=false
+  command -v jq >/dev/null 2>&1 || die "jq is not installed"
+  resp=$(gh api --method POST "repos/$REPO_SLUG/pulls" -f title="$TITLE_VALUE" -f head="$BRANCH" -f base="$R_DEFAULT" \
+    -F draft="$draft" -F body=@"$BODY_COPY" 2>/dev/null) || die "gh could not create the pull request"
+  url=$(printf '%s' "$resp" | jq -r '.html_url | strings' 2>/dev/null) || die "$bad"
+  # Exactly https://github.com/<slug>/pull/<digits>; only the slug compares case-insensitively.
+  case "$url" in
+    https://github.com/*) ;;
+    *) die "$bad" ;;
+  esac
+  rest=${url#https://github.com/}
+  [ "$(lower "${rest:0:${#REPO_SLUG}}")" = "$(lower "$REPO_SLUG")" ] || die "$bad"
+  rest=${rest:${#REPO_SLUG}}
+  case "$rest" in
+    /pull/*) num=${rest#/pull/} ;;
+    *) die "$bad" ;;
+  esac
+  case "$num" in
+    ""|*[!0123456789]*) die "$bad" ;;
+  esac
+  printf '%s\n' "$url"
+}
+
+# Merge only: the pull request's file list as GitHub reports it, so a lying loopback remote cannot hide a
+# CI/policy file change. GitHub truncates the list at 3000 files; a list that may be cut is refused.
+cloud_check_pr_files() {
+  local out n f
+  out=$(gh api --paginate "repos/$REPO_SLUG/pulls/$OPT_PR/files?per_page=100" 2>/dev/null) \
+    || die "cannot list the files of pull request $OPT_PR with gh"
+  out=$(printf '%s' "$out" | jq -sr '
+    if length == 0 or any(.[]; type != "array") then error("shape") else add end
+    | if any(.[]; type != "object" or (.filename | type) != "string"
+        or ((.previous_filename // "") | type) != "string") then error("shape") else . end
+    | (length | tostring), (.[] | .filename, (.previous_filename // empty))' 2>/dev/null) \
+    || die "gh returned an unexpected pull request file list"
+  n=${out%%$'\n'*}
+  case "$n" in
+    ""|*[!0123456789]*) die "gh returned an unexpected pull request file list" ;;
+  esac
+  [ "$n" -lt 3000 ] || die "pull request $OPT_PR lists $n files; GitHub truncates that list, so it cannot be checked"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if is_ci_path "$f"; then
+      refuse "CI policy file changed in pull request $OPT_PR: $(printf '%s' "$f" | sanitize); merge never accepts these changes"
+    fi
+  done <<<"$(printf '%s\n' "$out" | sed 1d)"
+  stop_if_refused
+}
+
+# Maps the REST pull request, its check runs and its commit statuses to the gh pr view --json shape,
+# so PR_SHAPE, PR_CI_SHAPE and the verdict filters apply unchanged. Input: three slurped JSON values.
+CLOUD_PR_MAP='if length != 3 then error("shape") else
+  .[0] as $p | {
+    state: (if $p.merged_at != null then "MERGED" else ($p.state | ascii_upcase) end),
+    isDraft: $p.draft,
+    isCrossRepository: (($p.head.repo.full_name | type) != "string" or $p.head.repo.full_name != $p.base.repo.full_name),
+    headRefName: $p.head.ref, headRefOid: $p.head.sha, baseRefName: $p.base.ref,
+    title: $p.title, body: ($p.body // ""), url: $p.html_url,
+    statusCheckRollup: (.[1] + .[2])
+  } end'
+CLOUD_RUNS_MAP='[.[] | .check_runs[] | {__typename: "CheckRun", name: .name,
+  status: (.status | ascii_upcase), conclusion: (.conclusion // "" | ascii_upcase)}]'
+CLOUD_STATUSES_MAP='[.[] | .statuses[] | {__typename: "StatusContext", context: .context, state: (.state | ascii_upcase)}]'
+
+# Prints the mapped pull request $1 as one JSON line; non-zero on any gh or jq failure.
+cloud_pr_view() {
+  local pr sha runs statuses
+  pr=$(gh api "repos/$REPO_SLUG/pulls/$1" 2>/dev/null) || return 1
+  sha=$(printf '%s' "$pr" | jq -r '.head.sha' 2>/dev/null) || return 1
+  matches "$sha" '^[0-9a-f]{40}$' || return 1
+  runs=$(gh api --paginate "repos/$REPO_SLUG/commits/$sha/check-runs?per_page=100" 2>/dev/null) || return 1
+  runs=$(printf '%s' "$runs" | jq -sc "$CLOUD_RUNS_MAP" 2>/dev/null) || return 1
+  statuses=$(gh api --paginate "repos/$REPO_SLUG/commits/$sha/status?per_page=100" 2>/dev/null) || return 1
+  statuses=$(printf '%s' "$statuses" | jq -sc "$CLOUD_STATUSES_MAP" 2>/dev/null) || return 1
+  printf '%s\n%s\n%s\n' "$pr" "$runs" "$statuses" | jq -sc "$CLOUD_PR_MAP" 2>/dev/null
+}
+
+# Same semantics as gh pr merge --squash --match-head-commit: GitHub refuses if the head moved.
+cloud_pr_merge() {
+  local err
+  err=$(gh api --method PUT "repos/$REPO_SLUG/pulls/$OPT_PR/merge" -f merge_method=squash -f sha="$OPT_EXPECT" \
+    -f commit_title="$TITLE_VALUE" -f commit_message= 2>&1 >/dev/null) && return 0
+  case "$err" in
+    *"(HTTP 409)"*) die "pull request head no longer matches --expect-sha; GitHub refused the merge" ;;
+    *"(HTTP 405)"*) die "GitHub reports the pull request is not mergeable (branch protection, reviews or conflicts)" ;;
+  esac
+  die "gh could not merge the pull request"
+}
+
 pr_field() { printf '%s' "$PR_JSON" | jq -r ".$1" 2>/dev/null; }
 pr_is() { printf '%s' "$PR_JSON" | jq -e --arg want "$2" ".$1 == \$want" >/dev/null 2>&1; }
 
@@ -823,9 +1042,13 @@ cmd_ci() {
   command -v gh >/dev/null 2>&1 || die "gh is not installed"
   command -v jq >/dev/null 2>&1 || die "jq is not installed"
   require_level merge
-  parse_github "$R_URL" || die "reading CI is supported on github.com only"
+  resolve_slug || die "reading CI is supported on github.com only"
 
-  PR_JSON=$(gh pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_CI_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh"
+  if [ "$BACKEND" = cloud-rest ]; then
+    PR_JSON=$(cloud_pr_view "$OPT_PR") || die "cannot read pull request $OPT_PR with gh"
+  else
+    PR_JSON=$(gh pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_CI_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh"
+  fi
   printf '%s' "$PR_JSON" | jq -se "$PR_CI_SHAPE" >/dev/null 2>&1 || die "$bad"
   compute_ci_verdict
   # Right after a draft is marked ready, skipped or missing checks may only not have restarted yet.
@@ -859,12 +1082,19 @@ cmd_merge() {
   command -v gh >/dev/null 2>&1 || die "gh is not installed"
   command -v jq >/dev/null 2>&1 || die "jq is not installed"
   preflight merge online "$OPT_EXPECT"
-  parse_github "$R_URL" || die "merging is supported on github.com only"
+  resolve_slug || die "merging is supported on github.com only"
   run_standards merge
   stop_if_refused
 
-  PR_JSON=$(gh pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh"
+  if [ "$BACKEND" = cloud-rest ]; then
+    PR_JSON=$(cloud_pr_view "$OPT_PR") || die "cannot read pull request $OPT_PR with gh"
+  else
+    PR_JSON=$(gh pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh"
+  fi
   printf '%s' "$PR_JSON" | jq -se "$PR_SHAPE" >/dev/null 2>&1 || die "$bad"
+  if [ "$BACKEND" = cloud-rest ]; then
+    cloud_check_pr_files
+  fi
 
   pr_is state OPEN || die "pull request is not open"
   pr_is headRefName "$BRANCH" || die "pull request head branch differs from the current branch"
@@ -895,6 +1125,7 @@ cmd_merge() {
   [ "$CI_VERDICT" != failed ] || die "CI checks are failing"
 
   if [ "$OPT_MARK_READY" = 1 ]; then
+    [ "$BACKEND" = local ] || die "cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr $OPT_PR --after-ready"
     gh pr ready "$OPT_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || die "gh could not mark the pull request ready"
     printf 'marked ready: %s %s\n' "$OPT_PR" "$OPT_EXPECT"
     return 0
@@ -905,6 +1136,11 @@ cmd_merge() {
     skipped-only) die "pull request has no successful check: every check was skipped or neutral" ;;
     pending) die "CI checks are still pending" ;;
   esac
+  if [ "$BACKEND" = cloud-rest ]; then
+    cloud_pr_merge
+    printf '%s %s\n' "$OPT_PR" "$OPT_EXPECT"
+    return 0
+  fi
   gh pr merge "$OPT_PR" --repo "$REPO_SLUG" --squash --match-head-commit "$OPT_EXPECT" --subject "$TITLE_VALUE" --body "" >/dev/null 2>&1 \
     || die "gh could not merge the pull request"
   printf '%s %s\n' "$OPT_PR" "$OPT_EXPECT"
@@ -913,6 +1149,8 @@ cmd_merge() {
 cmd_enable() {
   local level urls reason default="" symref name answer origin top ci_col=- ci_word=refused
   require_tty
+  # enable and disable manage only local rows, never `github:` rows.
+  BACKEND=local
   [ $# -ge 1 ] || die "enable needs a level: commit, push, pr or merge"
   level=$1
   shift
@@ -985,6 +1223,7 @@ cmd_enable() {
 
 cmd_disable() {
   require_tty
+  BACKEND=local
   [ $# -eq 0 ] || die "disable takes no arguments"
   R_KEY=$(repo_key) || die "not inside a git repository"
   [ -n "$R_KEY" ] || die "not inside a git repository"

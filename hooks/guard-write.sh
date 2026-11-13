@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Global PreToolUse guard for Edit/Write/NotebookEdit. Exit 2 = block. Requires jq.
 set -f
+command -v jq >/dev/null 2>&1 || { echo "BLOCKED: jq is required by guard-write" >&2; exit 2; }
 INPUT=$(cat)
-P=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
+P=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty') || { echo "BLOCKED: guard-write could not parse its JSON input" >&2; exit 2; }
 [ -z "$P" ] && exit 0
 
 deny() {
@@ -20,7 +21,7 @@ case "$CLEAN" in
   .git/*|*/.git/*)                                      deny ".git internals" ;;
   */.ssh/*|*/.aws/*|*/.gnupg/*|*/.kube/*)               deny "credential directory" ;;
   *.pem|*/id_rsa*|*/id_ed25519*|*/.npmrc|*/.netrc|*/.pypirc) deny "credential file" ;;
-  */.claude/settings*.json|*/.claude/hooks/*)           deny "guard-rail configuration is protected" ;;
+  */.claude/settings*.json|*/.claude/hooks/*|*/.claude/rules/*|*/.claude/agents/*) deny "guard-rail configuration is protected" ;;
   */.claude/git-publish.registry)                       deny "git-publish registry is protected; use git-publish.sh in your own terminal" ;;
   "$H"/.gitconfig|"$H"/.config/git/config)              deny "global git configuration is protected" ;;
   "$H"/.claude/agents/*|"$H"/.claude/claude.md|"$H"/.claude/skills/*) deny "user-level agent configuration is protected; edit it manually" ;;

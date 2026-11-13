@@ -199,6 +199,126 @@ check guard-bash.sh 0 '~/.claude/hooks/git-publish.sh ci --pr 1 --after-ready'
 check guard-bash.sh 0 '~/.claude/hooks/git-publish.sh status'
 check guard-bash.sh 0 'grep -n git-publish README.md'
 check guard-bash.sh 0 'cat hooks/git-publish.sh'
+# home config under HOME=/root: the registry and writes through $HOME stay denied
+HOME=/root check guard-bash.sh 2 'cat /root/.claude/git-publish.registry'
+HOME=/root check guard-bash.sh 2 'echo x >> /root/.claude/git-publish.registry'
+HOME=/root check guard-bash.sh 2 'echo x > $HOME/.claude/settings.json'
+HOME=/root check guard-bash.sh 2 'cp /tmp/x "$HOME"/.claude/hooks/guard-bash.sh'
+HOME=/root check guard-bash.sh 2 'cp /tmp/x /root/.claude/hooks/guard-bash.sh'
+# a project's committed .claude/hooks and .claude/settings*.json: writes denied at any prefix
+check guard-bash.sh 2 'echo x > .claude/settings.json'
+check guard-bash.sh 2 'echo x >> ./.claude/settings.json'
+check guard-bash.sh 2 'echo x >../app/.claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'printf x > /srv/app/.claude/settings.json'
+check guard-bash.sh 2 'printf x >| .claude/settings.json'
+check guard-bash.sh 2 'cat <<EOF > .claude/hooks/x.sh'
+check guard-bash.sh 2 'echo x | tee .claude/settings.json'
+check guard-bash.sh 2 'echo x | tee -a /srv/app/.claude/hooks/x.sh'
+check guard-bash.sh 2 "sed -i '' s/a/b/ .claude/settings.json"
+check guard-bash.sh 2 'sed -i s/a/b/ ./.claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 "perl -pi -e s/a/b/ .claude/settings.json"
+check guard-bash.sh 2 'truncate -s 0 .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'chmod -x .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'cp /tmp/x .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'cp /tmp/x ./.claude/settings.json'
+check guard-bash.sh 2 'cp /tmp/x /srv/app/.claude/hooks/'
+check guard-bash.sh 2 'cp -t .claude/hooks /tmp/x'
+check guard-bash.sh 2 'cp /tmp/settings.json .claude/'
+check guard-bash.sh 2 'rsync -a /tmp/h/ .claude/hooks'
+check guard-bash.sh 2 'ln -sf /tmp/x .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'rm .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'rm -f /srv/app/.claude/settings.json'
+check guard-bash.sh 2 'git rm .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'mv .claude/hooks /tmp/h'
+check guard-bash.sh 2 'mv .claude /tmp/c'
+check guard-bash.sh 2 'mv /tmp/x .claude/settings.json'
+check guard-bash.sh 2 'rm .claude/hoo*/guard-bash.sh'
+check guard-bash.sh 2 'dd if=/tmp/x of=.claude/settings.json'
+check guard-bash.sh 2 'cd .claude && echo x > settings.json'
+check guard-bash.sh 2 'cd /srv/app/.claude/hooks && rm guard-bash.sh'
+check guard-bash.sh 2 'cd .claude; cd hooks; cp /tmp/x .'
+check guard-bash.sh 2 'echo x > ".claude/settings.json"'
+# reads of those paths, and copies from them to elsewhere, stay allowed
+check guard-bash.sh 0 'cat .claude/settings.json'
+check guard-bash.sh 0 'grep -n PreToolUse .claude/settings.json'
+check guard-bash.sh 0 'rg -n deny ./.claude/hooks'
+check guard-bash.sh 0 'ls -la .claude/hooks'
+check guard-bash.sh 0 'diff -u .claude/hooks/guard-bash.sh hooks/guard-bash.sh'
+check guard-bash.sh 0 'head -n 20 /srv/app/.claude/settings.json'
+check guard-bash.sh 0 'wc -l .claude/hooks/guard-bash.sh'
+check guard-bash.sh 0 'git add .claude/hooks .claude/settings.json'
+check guard-bash.sh 0 'git diff .claude/settings.json'
+check guard-bash.sh 0 'cp .claude/settings.json /tmp/settings.json'
+check guard-bash.sh 0 'cp -r .claude/hooks /tmp/h'
+check guard-bash.sh 0 'cat .claude/settings.json > /tmp/s.json'
+check guard-bash.sh 2 'echo x > .claude/agents/a.md'
+check guard-bash.sh 2 'echo x > .claude/rules/a.md'
+check guard-bash.sh 0 'echo x > agents/a.md'
+check guard-bash.sh 0 'echo x > skills/s/SKILL.md'
+check guard-bash.sh 0 'cp .claude/agents/a.md /tmp/a.md'
+# download, extract and restore destinations
+check guard-bash.sh 2 'curl -o .claude/hooks/x.sh https://example.com/x'
+check guard-bash.sh 2 'curl -sSLo .claude/settings.json https://example.com/x'
+check guard-bash.sh 2 'curl --output .claude/rules/x.md https://example.com/x'
+check guard-bash.sh 0 'curl -o /tmp/x https://example.com/x'
+check guard-bash.sh 0 'curl -O https://example.com/.claude/hooks/x'
+check guard-bash.sh 2 'curl -o .claude/hooks/x https://e'
+check guard-bash.sh 2 'curl --output .claude/settings.json https://e'
+check guard-bash.sh 2 'wget -O .claude/hooks/x.sh https://example.com/x'
+check guard-bash.sh 2 'wget --output-document=.claude/agents/x.md https://example.com/x'
+check guard-bash.sh 0 'wget -O /tmp/x https://example.com/x'
+check guard-bash.sh 2 'tar -xf x.tgz -C .claude/hooks'
+check guard-bash.sh 2 'tar xzf x.tgz --directory=.claude/agents'
+check guard-bash.sh 0 'tar -xf x.tgz -C /tmp'
+check guard-bash.sh 0 'tar -czf x.tgz -C .claude/hooks .'
+check guard-bash.sh 2 'unzip x.zip -d .claude/hooks'
+check guard-bash.sh 0 'unzip x.zip -d /tmp/x'
+check guard-bash.sh 2 'git checkout -- .claude/settings.json'
+check guard-bash.sh 2 'git checkout main -- .claude/rules/x.md'
+check guard-bash.sh 2 'git restore .claude/hooks/x.sh'
+check guard-bash.sh 0 'git restore --staged .claude/settings.json'
+check guard-bash.sh 2 'git restore --staged --worktree .claude/settings.json'
+check guard-bash.sh 2 'git restore -W .claude/hooks/x.sh'
+check guard-bash.sh 2 'git restore --source=main --staged --worktree .claude/hooks/x.sh'
+check guard-bash.sh 0 'git checkout main'
+check guard-bash.sh 2 'patch .claude/hooks/x.sh < x.diff'
+check guard-bash.sh 0 'patch src/x.js < x.diff'
+# git restore of the working tree stays denied by the older rule, so this also denies
+check guard-bash.sh 2 'git restore src/x'
+check guard-bash.sh 2 'git restore -s HEAD .claude/settings.json'
+check guard-bash.sh 2 'git restore --source=HEAD .claude/hooks/x.sh'
+check guard-bash.sh 2 'echo --staged; git restore -s HEAD~1 .claude/hooks/guard-bash.sh'
+check guard-bash.sh 2 'git restore -SW .claude/hooks/x.sh'
+check guard-bash.sh 0 'git restore -S .claude/settings.json'
+check guard-bash.sh 2 'curl -o.claude/hooks/guard-bash.sh https://e'
+check guard-bash.sh 2 'curl --output=.claude/hooks/guard-bash.sh https://e'
+check guard-bash.sh 2 'curl -sSLo.claude/hooks/guard-bash.sh https://e'
+# missing or malformed input fails closed; valid input without a command stays allowed
+check guard-bash.sh 0 'echo hi'
+check_input() {
+  local hook=$1 want=$2 input=$3 got
+  printf '%s' "$input" | "$HOOKS/$hook" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = "$want" ]; then echo "ok    [$hook] input: $input"; else echo "FAIL  [$hook] want=$want got=$got: input: $input"; fail=1; fi
+}
+for h in guard-bash.sh guard-write.sh readonly-bash.sh; do
+  check_input "$h" 2 '{bad json'
+  check_input "$h" 2 '{"tool_input":'
+  check_input "$h" 0 '{}'
+  check_input "$h" 0 '{"tool_input":{}}'
+done
+# jq missing: run with an empty PATH directory
+NOJQ=$(mktemp -d)
+BASH_BIN=$(command -v bash)
+for h in guard-bash.sh guard-write.sh readonly-bash.sh; do
+  printf '%s' '{"tool_input":{"command":"ls","file_path":"/x/y"}}' | PATH="$NOJQ" "$BASH_BIN" "$HOOKS/$h" >/dev/null 2>&1
+  got=$?
+  if [ "$got" = 2 ]; then echo "ok    [$h] jq missing"; else echo "FAIL  [$h] jq missing: want=2 got=$got"; fail=1; fi
+done
+rmdir "$NOJQ"
+check guard-bash.sh 0 'cp /tmp/x .claude/skills/s/SKILL.md'
+check guard-bash.sh 0 'cp .claude/settings.json .claude/settings.json.bak'
+check guard-bash.sh 0 'cd .claude && cat settings.json'
 
 checkw 2 '/x/.claude/git-publish.registry'
 checkw 0 '/x/git-publish.registry'
@@ -211,7 +331,10 @@ HOME=/Users/x checkw 2 '/Users/X/.GitConfig'
 HOME=/Users/x checkw 0 '/Users/y/.gitconfig'
 checkw 2 "$HOME/.gitconfig"
 checkw 2 "$HOME/.config/git/config"
-checkw 0 '/x/.claude/agents/a.md'
+checkw 2 '/x/.claude/agents/a.md'
+checkw 2 '/x/.claude/rules/a.md'
+checkw 0 '/x/agents/a.md'
+checkw 0 '/x/skills/s/SKILL.md'
 checkw 0 '/x/.claude/skills/s/SKILL.md'
 
 check readonly-bash.sh 2 'sort -o out.txt a.txt'

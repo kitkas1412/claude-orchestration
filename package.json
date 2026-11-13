@@ -1,6 +1,6 @@
 {
   "name": "claude-orchestration",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Installs a multi-agent orchestration setup for Claude Code into ~/.claude",
   "private": true,
   "bin": {
@@ -10,6 +10,8 @@
     "bin/",
     "agents/",
     "hooks/",
+    "project/",
+    "cloud/",
     "skills/",
     "third_party/",
     "tests/",

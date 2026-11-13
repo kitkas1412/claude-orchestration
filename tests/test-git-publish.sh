@@ -74,7 +74,10 @@ E
 cat >"$T/stub/git" <<E
 #!/bin/bash
 case "\$1" in
-  push) echo "PUSH \$*" >>"$T/push.log"; printf '%s|%s\n' "\${GIT_SSH_COMMAND:-}" "\${GIT_NO_LAZY_FETCH:-}" >"$T/push.env"; touch "$T/pushed"; exit 0 ;;
+  push)
+    # With $T/push.fail present, the push fails and echoes its argv (the URL included) the way git errors may.
+    if [ -e "$T/push.fail" ]; then echo "fatal: unable to access \$*" >&2; exit 128; fi
+    echo "PUSH \$*" >>"$T/push.log"; printf '%s|%s\n' "\${GIT_SSH_COMMAND:-}" "\${GIT_NO_LAZY_FETCH:-}" >"$T/push.env"; touch "$T/pushed"; exit 0 ;;
   ls-remote)
     if [ "\$2" = --symref ]; then printf 'ref: refs/heads/main\tHEAD\n'; exit 0; fi
     case "\$4" in
@@ -178,30 +181,30 @@ out=$(printf 'remote\n' | "$C" enable push 2>&1); [ $? = 0 ] && ok || bad "enabl
 [ "$(file_mode "$REG")" = 600 ] && ok || bad "registry mode"
 [ "$(awk -F'\t' '{print NF}' "$REG")" = 6 ] && ok || bad "registry columns"
 [ "$(awk -F'\t' '{print $6}' "$REG")" = - ] && ok || bad "registry ci column without the flag: $(cat "$REG")"
-"$C" status | grep -qx 'ci changes: refused' && ok || bad "status ci changes default"
-"$C" status | grep -q '^level: push$' && ok || bad "status level"
-"$C" status | grep -q '^default branch: main$' && ok || bad "status default"
-"$C" status | grep -q '^style: conventional$' && ok || bad "status style"
+"$C" status | grep -x 'ci changes: refused' >/dev/null && ok || bad "status ci changes default"
+"$C" status | grep '^level: push$' >/dev/null && ok || bad "status level"
+"$C" status | grep '^default branch: main$' >/dev/null && ok || bad "status default"
+"$C" status | grep '^style: conventional$' >/dev/null && ok || bad "status style"
 git worktree add -q -b wt/one "$T/wt" main
-(cd "$T/wt" && "$C" status | grep -q '^level: push$') && ok || bad "worktree status"
+(cd "$T/wt" && "$C" status | grep '^level: push$' >/dev/null) && ok || bad "worktree status"
 refused "status takes no args" "no arguments" "$C" status x
 # enable always writes six columns; --allow-ci-changes sets the last one to ci, and re-enabling resets it.
 out=$(printf 'remote\n' | "$C" enable push --allow-ci-changes 2>&1); rc=$?
 [ "$rc" = 0 ] && printf '%s' "$out" | grep -qF 'CI changes : allowed' && ok || bad "enable with --allow-ci-changes: rc=$rc out=$out"
 [ "$(awk -F'\t' '{print NF " " $6}' "$REG")" = "6 ci" ] && ok || bad "registry row with the flag: $(cat "$REG")"
-"$C" status | grep -qx 'ci changes: allowed' && ok || bad "status after enable --allow-ci-changes"
+"$C" status | grep -x 'ci changes: allowed' >/dev/null && ok || bad "status after enable --allow-ci-changes"
 out=$(printf 'remote\n' | "$C" enable push --style project 2>&1); rc=$?
 [ "$rc" = 0 ] && printf '%s' "$out" | grep -qF 'CI changes : refused' && ok || bad "enable without the flag: rc=$rc out=$out"
 [ "$(awk -F'\t' '{print NF " " $5 " " $6}' "$REG")" = "6 project -" ] && ok || bad "re-enable did not reset the ci column: $(cat "$REG")"
-"$C" status | grep -qx 'ci changes: refused' && ok || bad "status after re-enable without the flag"
+"$C" status | grep -x 'ci changes: refused' >/dev/null && ok || bad "status after re-enable without the flag"
 out=$(printf 'remote\n' | "$C" enable push --allow-ci-changes --allow-ci-changes 2>&1); rc=$?
 [ "$rc" = 2 ] && printf '%s' "$out" | grep -qF 'duplicate' && ok || bad "duplicate --allow-ci-changes: rc=$rc out=$out"
 # A sixth column other than ci or - makes the row unregistered.
 awk -F'\t' -v OFS='\t' '{$6 = "yes"; print}' "$REG" >"$REG.new" && mv "$REG.new" "$REG"
 refused "unknown sixth column means unregistered" "not registered" "$C" plan
-"$C" status | grep -qx 'level: off' && ok || bad "status with an unknown sixth column"
+"$C" status | grep -x 'level: off' >/dev/null && ok || bad "status with an unknown sixth column"
 printf 'remote\n' | "$C" enable push >/dev/null 2>&1
-"$C" status | grep -qx 'level: push' && ok || bad "re-enable after the unknown sixth column"
+"$C" status | grep -x 'level: push' >/dev/null && ok || bad "re-enable after the unknown sixth column"
 
 # --- happy path: only the current branch reaches the remote, no tags, no repo hooks ---
 branch feat/ok; commit a.txt one "feat(core): add a"
@@ -309,7 +312,7 @@ git update-ref refs/heads/main "$(git rev-parse HEAD~2)"; git update-ref refs/re
 
 # --- disable ---
 passes "disable" "$C" disable
-"$C" status | grep -q '^level: off$' && ok || bad "off after disable"
+"$C" status | grep '^level: off$' >/dev/null && ok || bad "off after disable"
 passes "disable twice" "$C" disable
 refused "disable with args" "no arguments" "$C" disable x
 printf 'remote\n' | "$C" enable push >/dev/null 2>&1
@@ -440,8 +443,8 @@ git config user.email t@example.invalid; git config user.name t; git config comm
 out=$(printf 'noorigin\n' | "$C" enable commit 2>&1); [ $? = 0 ] && ok || bad "enable commit without origin: $out"
 row=$(awk -F'\t' -v k="$(cd .git && pwd -P)" '$1 == k {print $2 "|" $3 "|" $4 "|" $5}' "$REG")
 [ "$row" = "-|commit|-|conventional" ] && ok || bad "registry row for no-origin repo: $row"
-"$C" status | grep -q '^level: commit$' && ok || bad "status after enable commit without origin"
-"$C" status | grep -q '^default branch: -$' && ok || bad "default branch should be - at level commit"
+"$C" status | grep '^level: commit$' >/dev/null && ok || bad "status after enable commit without origin"
+"$C" status | grep '^default branch: -$' >/dev/null && ok || bad "default branch should be - at level commit"
 passes "disable the no-origin repo again" "$C" disable
 cd "$T/work" || exit 1
 printf 'remote\n' | "$C" enable commit >/dev/null 2>&1
@@ -454,7 +457,7 @@ for kv in filter.lfs.clean=x lfs.url=https://example.invalid/lfs credential.help
   git config "${kv%%=*}" "${kv#*=}"
 done
 out=$(printf 'remote\n' | "$C" enable commit 2>&1); [ $? = 0 ] && ok || bad "enable commit with lfs/credential/http config: $out"
-"$C" status | grep -q '^level: commit$' && ok || bad "status after enable commit with config"
+"$C" status | grep '^level: commit$' >/dev/null && ok || bad "status after enable commit with config"
 for k in filter.lfs.clean lfs.url credential.helper http.sslVerify; do git config --unset "$k"; done
 for kv in filter.lfs.clean=x lfs.url=https://example.invalid/lfs credential.helper=x http.sslVerify=false; do
   git config "${kv%%=*}" "${kv#*=}"
@@ -462,9 +465,9 @@ for kv in filter.lfs.clean=x lfs.url=https://example.invalid/lfs credential.help
   [ "$rc" = 2 ] && ok || bad "enable push with ${kv%%=*} set: rc=$rc out=$out"
   git config --unset "${kv%%=*}"
 done
-"$C" status | grep -q '^level: commit$' && ok || bad "refused enable push changed the level"
+"$C" status | grep '^level: commit$' >/dev/null && ok || bad "refused enable push changed the level"
 printf 'remote\n' | "$C" enable push >/dev/null 2>&1
-"$C" status | grep -q '^level: push$' && ok || bad "enable push after removing the config"
+"$C" status | grep '^level: push$' >/dev/null && ok || bad "enable push after removing the config"
 
 # --- control characters in the repository path ---
 cp "$REG" "$T/reg.bak"
@@ -563,8 +566,10 @@ refused "body is dash" "dash" "$G" plan --title-file "$T/title" --body-file -
 refused "pr needs files" "required" "$G" pr --expect-sha "$S"
 refused "pr without --expect-content" "64-hex" "$G" pr --expect-sha "$S" --title-file "$T/title" --body-file "$T/body"
 out=$("$G" pr --expect-sha "$S" --expect-content "$CONTENT" --title-file "$T/title" --body-file "$T/body" 2>&1); [ $? = 0 ] && ok || bad "pr: $out"
-# The push refspec is the verified commit, not a ref name that could move.
-grep -qxF "PUSH push --no-follow-tags --recurse-submodules=no origin $S:refs/heads/feat/pr" "$T/push.log" && ok || bad "push argv: $(cat "$T/push.log")"
+# The push refspec is the verified commit, not a ref name that could move, and the target is the verified
+# URL itself, not the remote name `origin` (whose config could be read again after the checks).
+grep -qxF "PUSH push --no-follow-tags --recurse-submodules=no -- git@github.com:acme/widget.git $S:refs/heads/feat/pr" "$T/push.log" && ok || bad "push argv: $(cat "$T/push.log")"
+grep -qF ' origin ' "$T/push.log" && bad "push still names the remote origin: $(cat "$T/push.log")" || ok
 # gh gets a private temp copy of the body, never the caller's file.
 want="[pr] [create] [--draft] [--repo] [acme/widget] [--base] [main] [--head] [feat/pr] [--title] [feat: add pr] [--body-file] [$T/tmp/git-publish."
 case "$(cat "$T/gh.log")" in
@@ -576,6 +581,22 @@ cmp -s "$T/gh.body" "$T/body" && ok || bad "gh received a body that differs from
 : >"$T/push.log"
 out=$("$G" pr --expect-sha "$S" --expect-content "$CONTENT" --title-file "$T/title" --body-file "$T/body" 2>&1); [ $? = 0 ] && ok || bad "pr again: $out"
 [ ! -s "$T/push.log" ] && ok || bad "pr pushed again though remote already at SHA"
+
+# --- chained url rewrites: git rewrites the pushed URL a second time, so the push must be refused ---
+# origin uses an alias that one global pushInsteadOf rule turns into the registered URL (the normal case);
+# a second global rule that matches the registered URL would send the push to an unchecked URL.
+printf '[url "git@github.com:"]\n\tpushInsteadOf = https://alias.invalid/\n' >"$T/chain1.cfg"
+{ cat "$T/chain1.cfg"; printf '[url "https://chained.invalid/"]\n\tpushInsteadOf = git@github.com:\n'; } >"$T/chain2.cfg"
+git remote set-url origin "https://alias.invalid/acme/widget.git"
+rm -f "$T/pushed"; : >"$T/push.log"
+out=$(GIT_CONFIG_GLOBAL="$T/chain1.cfg" "$G" pr --expect-sha "$S" --expect-content "$CONTENT" --title-file "$T/title" --body-file "$T/body" 2>&1); [ $? = 0 ] && ok || bad "pr with one global rewrite: $out"
+grep -qxF "PUSH push --no-follow-tags --recurse-submodules=no -- git@github.com:acme/widget.git $S:refs/heads/feat/pr" "$T/push.log" && ok || bad "single rewrite push argv: $(cat "$T/push.log")"
+rm -f "$T/pushed"; : >"$T/push.log"; : >"$T/gh.log"
+out=$(GIT_CONFIG_GLOBAL="$T/chain2.cfg" "$G" pr --expect-sha "$S" --expect-content "$CONTENT" --title-file "$T/title" --body-file "$T/body" 2>&1); rc=$?
+[ "$rc" != 0 ] && printf '%s' "$out" | grep -qF "rewrite the push URL again" && ok || bad "chained rewrite not refused: rc=$rc $out"
+[ ! -s "$T/push.log" ] && ok || bad "chained rewrite still pushed: $(cat "$T/push.log")"
+printf '%s' "$out" | grep -qF -e "chained.invalid" -e "alias.invalid" -e "github.com" && bad "chained rewrite output shows a URL: $out" || ok
+git remote set-url origin "git@github.com:acme/widget.git"; touch "$T/pushed"; : >"$T/push.log"; : >"$T/gh.log"
 
 # --- --expect-content binds the PR text approved in plan ---
 : >"$T/gh.log"; : >"$T/push.log"
@@ -603,7 +624,7 @@ refused "symlinked parent of body" "symlinked parent" "$G" plan --title-file "$T
 
 # --- level pr is required for pr and for plan with PR text ---
 printf 'widget\n' | "$G" enable push >/dev/null 2>&1
-"$G" status | grep -q '^level: push$' && ok || bad "level push after enable"
+"$G" status | grep '^level: push$' >/dev/null && ok || bad "level push after enable"
 : >"$T/gh.log"; : >"$T/push.log"
 refused "pr at level push" "too low" "$G" pr --expect-sha "$S" --expect-content "$CONTENT" --title-file "$T/title" --body-file "$T/body"
 refused "plan with pr text at level push" "too low" "$G" plan --title-file "$T/title" --body-file "$T/body"
@@ -626,7 +647,7 @@ git init -q -b stable "$T/d"; cd "$T/d" || exit 1
 git config user.email t@example.invalid; git config user.name t; git config commit.gpgsign false; commit f x "chore: i"
 git clone -q --bare "$T/d" "$T/stable-remote.git"; git remote add origin "$T/stable-remote.git"; git fetch -q origin
 out=$(printf 'stable-remote\n' | "$C" enable push 2>&1); [ $? = 0 ] && ok || bad "enable stable: $out"
-"$C" status | grep -q '^default branch: stable$' && ok || bad "stable default captured"
+"$C" status | grep '^default branch: stable$' >/dev/null && ok || bad "stable default captured"
 refused "on registered default" "default branch" "$C" plan
 git checkout -q -b feat/s; commit g x "feat: g"; passes "feature from stable" "$C" plan
 
@@ -999,11 +1020,12 @@ git remote set-url origin "$T/m-remote.git"; setrow "$T/m-remote.git" merge main
 resetgh; cij .; cirefused "non-GitHub origin" "github.com only"
 git remote set-url origin "$GHURL"; setrow "$GHURL" merge main
 
-# --- CI policy files: workflows, actions and CODEOWNERS ---
+# --- CI/policy files: workflows, actions, CODEOWNERS and Claude Code config (.claude/, CLAUDE.md, .mcp.json) ---
 # merge never accepts a change to them; push, pr and plan accept it only with a ci registry column.
 git init -q -b main "$T/ci"; cd "$T/ci" || exit 1
 git config user.email t@example.invalid; git config user.name t; git config commit.gpgsign false
-CIPATHS=(.github/workflows/ci.yml .github/actions/a/action.yml CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS)
+CIPATHS=(.github/workflows/ci.yml .github/actions/a/action.yml CODEOWNERS .github/CODEOWNERS docs/CODEOWNERS
+  .claude/hooks/x.sh .claude/settings.json CLAUDE.md sub/CLAUDE.md CLAUDE.local.md .mcp.json)
 for p in "${CIPATHS[@]}" README.md; do mkdir -p "$(dirname "$p")"; printf 'x\n' >"$p"; done
 git add -A; git commit -q -m "chore: init"
 git remote add origin "$GHURL"; git update-ref refs/remotes/origin/main main
@@ -1045,9 +1067,16 @@ setrow "$GHURL" merge main
 branch feat/ci-addrm; commit .github/workflows/new.yml y "feat: add wf"; git rm -q .github/workflows/new.yml; git commit -q -m "feat: drop wf"
 refused "ci file added then removed" "CI policy file changed in commit $(short_of HEAD~1): .github/workflows/new.yml; $CIWHY" "$K0" push --expect-sha "$(sha)"
 out=$("$K0" push --expect-sha "$(sha)" 2>&1 </dev/null); printf '%s' "$out" | grep -qF "the commit range" && bad "net-zero change reported in the range: $out" || ok
+# Policy paths match case-insensitively and at any depth (nested .claude/, CLAUDE.md, .mcp.json).
+# Directories here are new, so a case-insensitive file system cannot fold them into existing ones.
+for p in pkg2/.CLAUDE/rules/x.md pkg/.claude/skills/s/SKILL.md other/Claude.Md pkg/.mcp.json pkg/CLAUDE.local.md; do
+  branch feat/ci-nested; commit "$p" y "feat: nested policy"
+  refused "nested or cased policy path $p on push" "CI policy file changed in commit $(short_of HEAD): $p; $CIWHY" "$K0" push --expect-sha "$(sha)"
+done
 # Lookalike paths are not CI policy files.
 branch feat/ci-lookalike
-for p in docs/workflows/x.yml foo/CODEOWNERS docs/x/CODEOWNERS .github/ISSUE_TEMPLATE/x.md .github/workflowsx/y.yml CODEOWNERS.md; do
+for p in docs/workflows/x.yml foo/CODEOWNERS docs/x/CODEOWNERS .github/ISSUE_TEMPLATE/x.md .github/workflowsx/y.yml CODEOWNERS.md \
+  claude/settings.json .claude-x/y.json CLAUDE.md.bak notCLAUDE.md mcp.json .mcp.json.bak; do
   commit "$p" y "feat: lookalike"
 done
 passes "lookalike paths pass push on a five-column row" "$K0" push --expect-sha "$(sha)"
@@ -1150,6 +1179,432 @@ refused "shallow pr" "shallow" "$K0" pr --expect-sha "$SHS" --expect-content "$Z
 refused "shallow merge" "shallow" "$K0" merge --pr 7 --expect-sha "$SHS"
 refused "shallow merge --mark-ready-only" "shallow" "$K0" merge --mark-ready-only --pr 7 --expect-sha "$SHS"
 [ ! -s "$MS/gh.log" ] && [ ! -e "$T/pushed" ] && ok || bad "a shallow repository reached gh or push: $(cat "$MS/gh.log")"
+# --- cloud-rest backend (CLAUDE_CODE_REMOTE=true): REST via a stub `gh api`, stub git for push, no network ---
+# Only `github:<owner>/<repo>` rows count there. GraphQL is blocked in the cloud, so no gh call may be anything
+# but `gh api`. The stub git (as in the GitHub PR flow above) records the push; nothing leaves this machine.
+CLD_DIR="$T/cld"; export CLD_DIR; mkdir -p "$CLD_DIR" "$T/stubc" "$T/c7" "$T/c8"
+CL0="$T/c7/git-publish.sh"; mk_lockcopy "$CL0" "$T/stubc:"   # real require_tty
+CP="$T/c8/git-publish.sh"; mk_copy "$CP" "$T/stubc:"         # require_tty stubbed
+cp "$T/stub/git" "$T/stubc/git"
+cat >"$T/stubc/gh" <<'E'
+#!/bin/bash
+D="$CLD_DIR"
+for a in "$@"; do printf '[%s] ' "$a"; done >>"$D/gh.log"; echo >>"$D/gh.log"
+printf '%s|%s\n' "${HOME:-}" "${GH_CONFIG_DIR:-}" >"$D/gh.env"
+[ "$1" = api ] || exit 1
+case "$*" in
+  *"/git/ref/heads/"*)
+    # Default: main is the local main, any other branch is at HEAD once the stub git recorded a push.
+    # ref.json overrides the answer; fail.ref fails every ref lookup, fail.refbranch only non-main ones.
+    all="$*"; b=${all##*/git/ref/heads/}
+    [ -e "$D/fail.ref" ] && { echo "stub ref failure" >&2; exit 1; }
+    if [ "$b" = main ]; then
+      [ -e "$D/ref.json" ] && { cat "$D/ref.json"; exit 0; }
+      s=$(git rev-parse refs/heads/main)
+    else
+      [ -e "$D/fail.refbranch" ] && { echo "stub ref failure" >&2; exit 1; }
+      [ -e "$D/refbranch.json" ] && { cat "$D/refbranch.json"; exit 0; }
+      [ -e "$D/../pushed" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+      s=$(git rev-parse HEAD)
+    fi
+    printf '{"ref":"refs/heads/%s","node_id":"x","object":{"sha":"%s","type":"commit"}}\n' "$b" "$s" ;;
+  *"/files?"*) [ -e "$D/fail.files" ] && { echo "stub files failure" >&2; exit 1; }; cat "$D/files.json" ;;
+  *"--method POST"*)
+    [ -e "$D/fail.create" ] && { echo "stub create failure" >&2; exit 1; }
+    for a in "$@"; do case "$a" in body=@*) cat "${a#body=@}" >"$D/gh.body" ;; esac; done
+    cat "$D/create.json" ;;
+  *"--method PUT"*)
+    if [ -e "$D/merge.err" ]; then cat "$D/merge.err" >&2; exit 1; fi
+    echo '{"merged":true}' ;;
+  *check-runs*) cat "$D/runs.json" ;;
+  *"/status?"*) cat "$D/status.json" ;;
+  "api repos/"*"/pulls/"*) [ -e "$D/fail.pr" ] && { echo "stub view failure" >&2; exit 1; }; cat "$D/pr.json" ;;
+  *) exit 1 ;;
+esac
+exit 0
+E
+chmod +x "$T/stubc/gh" "$T/stubc/git"
+CLD=(env CLAUDE_CODE_REMOTE=true "$CP")
+LOC=(env -u CLAUDE_CODE_REMOTE "$CP")
+cres() {
+  rm -f "$CLD_DIR"/gh.log "$CLD_DIR"/gh.body "$CLD_DIR"/gh.env "$CLD_DIR"/fail.* "$CLD_DIR"/merge.err "$CLD_DIR"/ref.json "$CLD_DIR"/refbranch.json "$T/push.fail"
+  : >"$CLD_DIR/gh.log"; rm -f "$T/pushed"; : >"$T/push.log"
+  printf '[{"filename":"a.txt","status":"added"}]\n' >"$CLD_DIR/files.json"
+}
+apionly() { # name: every gh call was `gh api` and nothing mentions graphql, pr create or pr merge
+  if grep -qv '^\[api\] ' "$CLD_DIR/gh.log" || grep -qiE 'graphql|\[pr\]' "$CLD_DIR/gh.log"; then bad "$1: non-REST gh call: $(cat "$CLD_DIR/gh.log")"; else ok; fi
+}
+noput() { if grep -qF '[PUT]' "$CLD_DIR/gh.log"; then bad "$1: merge was sent: $(cat "$CLD_DIR/gh.log")"; else ok; fi; }
+GROW() { # level [default [style [ci]]]: the only registry row is the github: row
+  printf 'github:acme/widget\t-\t%s\t%s\t%s\t%s\n' "$1" "${2:-main}" "${3:-conventional}" "${4:--}" >"$REG"
+}
+CPROXY='http://local_proxy@127.0.0.1:41234/git/acme/widget'
+
+git init -q -b main "$T/cl"; cd "$T/cl" || exit 1
+git config user.email t@example.invalid; git config user.name t; git config commit.gpgsign false
+commit README.md hello "chore: init"
+git remote add origin "$CPROXY"
+CKEY=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
+branch feat/widget; commit a.txt a "feat: add widget"; CS=$(sha)
+
+# status: the backend decides which rows exist.
+GROW merge; cres
+out=$("${CLD[@]}" status 2>&1); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$(printf 'level: merge\nstyle: conventional\ndefault branch: main\nci changes: refused\nbackend: cloud-rest')" ] && ok || bad "cloud status with a github row: rc=$rc out=$out"
+out=$("${LOC[@]}" status 2>&1)
+[ "$out" = "$(printf 'level: off\nstyle: -\ndefault branch: -\nci changes: refused\nbackend: local')" ] && ok || bad "local status with only a github row must be off: $out"
+printf '%s\thttps://github.com/acme/widget.git\tmerge\tmain\tconventional\t-\n' "$CKEY" >"$REG"
+git remote set-url origin https://github.com/acme/widget.git
+"${CLD[@]}" status | grep -x 'level: off' >/dev/null && ok || bad "cloud must ignore a local row (a spoofed env gets no local grant): $("${CLD[@]}" status)"
+"${CLD[@]}" status | grep -x 'backend: cloud-rest' >/dev/null && ok || bad "cloud status backend line"
+refused "cloud ci with only a local row" "not registered" "${CLD[@]}" ci --pr 7
+printf '%s\thttps://github.com/acme/widget.git\tpush\tmain\tconventional\t-\ngithub:acme/widget\t-\tmerge\tmain\tconventional\t-\n' "$CKEY" >"$REG"
+"${LOC[@]}" status | grep -x 'level: push' >/dev/null && ok || bad "local backend must use its own row, not the github row"
+"${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "cloud backend must use the github row, not the local row"
+GROW commit '-'
+"${CLD[@]}" status | grep -x 'level: commit' >/dev/null && ok || bad "cloud commit-level github row with default -"
+git remote set-url origin "$CPROXY"
+
+# origin forms: github.com and the loopback proxy are accepted; anything else finds no row.
+GROW merge
+origin_level() { git remote set-url origin "$1"; "${CLD[@]}" status 2>&1 | sed -n 1p; }
+for u in https://github.com/acme/widget https://github.com/acme/widget.git git@github.com:acme/widget.git \
+  http://127.0.0.1/git/acme/widget.git https://localhost:8080/git/acme/widget "http://u:${FAKE_PW}${AT}localhost:8080/git/acme/widget.git" \
+  'http://[::1]:9/git/acme/widget' "$CPROXY"; do
+  [ "$(origin_level "$u")" = "level: merge" ] && ok || bad "cloud origin must be accepted: ${u//$FAKE_PW/<masked>}: $(origin_level "$u")"
+done
+for u in http://127.0.0.1.evil.com/git/acme/widget http://evil.com/git/acme/widget http://127.0.0.1:1/git/acme/widget/extra \
+  'http://127.0.0.1:1/git/acme/widget?x=1' 'http://127.0.0.1:1/git/acme/..' http://127.0.0.1:1/git/acme/widget/ \
+  http://127.0.0.1:1/x/git/acme/widget 'http://a@b@127.0.0.1/git/acme/widget' http://127.0.0.1:1/git/acme \
+  'http://localhost.evil.com:1/git/acme/widget' https://github.com/acme/other https://github.com/other/widget; do
+  [ "$(origin_level "$u")" = "level: off" ] && ok || bad "cloud origin must be rejected: $u: $(origin_level "$u")"
+done
+git remote set-url origin "$CPROXY"
+git config --add remote.origin.pushurl "$CPROXY"; git config --add remote.origin.pushurl https://github.com/acme/widget
+[ "$(origin_level "$CPROXY" | head -1)" = "level: off" ] && ok || bad "two push URLs must find no cloud row"
+git config --unset-all remote.origin.pushurl
+# The userinfo of the proxy URL is never printed.
+LEAKURL="http://u:${FAKE_PW}${AT}localhost:8080/git/acme/widget.git"
+git remote set-url origin "$LEAKURL"
+cres
+out=$("${CLD[@]}" status 2>&1); printf '%s' "$out" | grep -qF "$FAKE_PW" && bad "status printed the proxy userinfo" || ok
+GROW push
+refused_noleak "pr below its level with a userinfo origin" "too low" "$FAKE_PW" "${CLD[@]}" pr --expect-sha "$CS" --expect-content "$ZERO" "${PRFILES[@]}"
+git remote set-url origin "$CPROXY"
+
+# invalid github: rows find no registration.
+CROWS=(
+  'github:acme/widget\t-\tadmin\tmain\tconventional\t-'
+  'github:acme/widget\t-\tmerge\tmain\tloose\t-'
+  'github:acme/widget\thttps://github.com/acme/widget\tmerge\tmain\tconventional\t-'
+  'github:acme/widget\t-\tmerge\tbad;branch\tconventional\t-'
+  'github:acme/widget\t-\tmerge\t-\tconventional\t-'
+  'github:acme/widget\t-\tmerge\tmain\tconventional\tyes'
+  'github:acme/widget/extra\t-\tmerge\tmain\tconventional\t-'
+  'github:acme widget\t-\tmerge\tmain\tconventional\t-'
+  'github:other/widget\t-\tmerge\tmain\tconventional\t-'
+)
+for row in "${CROWS[@]}"; do
+  printf '%b\n' "$row" >"$REG"; cres
+  "${CLD[@]}" status | grep -x 'level: off' >/dev/null && ok || bad "invalid github row must be off: $row"
+  refused "ci with invalid github row [$row]" "not registered" "${CLD[@]}" ci --pr 7
+  [ ! -s "$CLD_DIR/gh.log" ] && ok || bad "invalid github row reached gh: $row"
+done
+printf 'github:acme/widget\t-\tmerge\tmain\tconventional\n' >"$REG"
+"${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "a five-column github row is valid (ci changes default to refused)"
+
+# fixtures for pr, ci and merge
+cpj() { # jq filter over the base REST pull request; the body carries the four headings
+  jq -n --arg s "$CS" --arg b "$(cat "$T/mbody")" '{state:"open",merged_at:null,draft:false,head:{ref:"feat/widget",sha:$s,repo:{full_name:"acme/widget"}},base:{ref:"main",repo:{full_name:"acme/widget"}},title:"feat: add widget",body:$b,html_url:"https://github.com/acme/widget/pull/7"}' | jq "$1" >"$CLD_DIR/pr.json"
+}
+R_OK='{"name":"build","status":"completed","conclusion":"success"}'
+R_SKIP='{"name":"lint","status":"completed","conclusion":"skipped"}'
+R_FAIL='{"name":"test","status":"completed","conclusion":"failure"}'
+R_PEND='{"name":"slow","status":"in_progress","conclusion":null}'
+S_OK='{"context":"x","state":"success"}'
+S_BAD='{"context":"y","state":"failure"}'
+S_PEND='{"context":"z","state":"pending"}'
+rpage() { printf '{"total_count":1,"check_runs":[%s]}\n' "$1"; }
+spage() { printf '{"state":"success","statuses":[%s]}\n' "$1"; }
+fixtures() { # filter, runs pages, status pages
+  cpj "$1"; printf '%s\n' "$2" >"$CLD_DIR/runs.json"; printf '%s\n' "$3" >"$CLD_DIR/status.json"
+}
+DEFRUNS=$(rpage "$R_OK"); DEFSTAT=$(spage "$S_OK")
+CIURL=https://github.com/acme/widget/pull/7
+
+# pr: draft unless the level is merge, REST only.
+GROW merge; cres
+out=$("${CLD[@]}" plan "${PRFILES[@]}" 2>&1 </dev/null); rc=$?
+CCS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
+[ "$rc" = 0 ] && [ "${#CCS}" = 64 ] && ok || bad "cloud plan with pr text: rc=$rc out=$out"
+CPRARGS=(--expect-sha "$CS" --expect-content "$CCS" "${PRFILES[@]}")
+printf '{"html_url":"%s"}\n' "$CIURL" >"$CLD_DIR/create.json"
+out=$("${CLD[@]}" pr "${CPRARGS[@]}" 2>"$T/cl.err" </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$CIURL" ] && ok || bad "cloud pr at level merge: rc=$rc out=$out err=$(cat "$T/cl.err")"
+for w in '[api] [--method] [POST] [repos/acme/widget/pulls]' '[-f] [title=feat: add widget]' '[-f] [head=feat/widget]' '[-f] [base=main]' '[-F] [draft=false]'; do
+  grep -qF -- "$w" "$CLD_DIR/gh.log" && ok || bad "cloud pr (merge) gh call lacks $w: $(cat "$CLD_DIR/gh.log")"
+done
+grep -qF '[draft=true]' "$CLD_DIR/gh.log" && bad "cloud pr at level merge opened a draft" || ok
+cmp -s "$CLD_DIR/gh.body" "$T/mbody" && ok || bad "cloud pr body differs from the planned body"
+grep -qxF "PUSH push --no-follow-tags --recurse-submodules=no -- $CPROXY $CS:refs/heads/feat/widget" "$T/push.log" && ok || bad "cloud pr push argv: $(cat "$T/push.log")"
+# Base and pushed branch come from the REST API, not from the agent-reachable loopback remote.
+grep -qxF '[api] [repos/acme/widget/git/ref/heads/main] ' "$CLD_DIR/gh.log" && ok || bad "cloud pr did not read the default branch from GitHub: $(cat "$CLD_DIR/gh.log")"
+grep -qxF '[api] [repos/acme/widget/git/ref/heads/feat/widget] ' "$CLD_DIR/gh.log" && ok || bad "cloud pr did not verify the pushed branch on GitHub: $(cat "$CLD_DIR/gh.log")"
+apionly "cloud pr (merge)"
+GROW pr; cres
+out=$("${CLD[@]}" pr "${CPRARGS[@]}" 2>"$T/cl.err" </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$CIURL" ] && grep -qF '[-F] [draft=true]' "$CLD_DIR/gh.log" && ok || bad "cloud pr at level pr must be a draft: rc=$rc out=$out log=$(cat "$CLD_DIR/gh.log")"
+apionly "cloud pr (pr)"
+GROW push; cres
+refused "cloud pr at level push" "too low" "${CLD[@]}" pr "${CPRARGS[@]}"
+[ ! -s "$CLD_DIR/gh.log" ] && [ ! -e "$T/pushed" ] && ok || bad "cloud pr at level push reached gh or push"
+GROW pr; cres; touch "$CLD_DIR/fail.create"
+refused "cloud pr when gh fails" "gh could not create the pull request" "${CLD[@]}" pr "${CPRARGS[@]}"
+for resp in '{"html_url":"http://github.com/acme/widget/pull/7"}' '{"number":7}' 'not json' '{"html_url":"https://github.com/a b"}' \
+  '{"html_url":"https://github.com/evil/widget/pull/7"}' '{"html_url":"https://github.com/acme/widget-x/pull/7"}' \
+  '{"html_url":"https://github.com/acme/widget/issues/7"}' '{"html_url":"https://github.com/acme/widget/pull/"}' \
+  '{"html_url":"https://github.com/acme/widget/pull/7x"}' '{"html_url":"https://github.com/acme/widget/pull/7/files"}' \
+  '{"html_url":"https://GITHUB.com/acme/widget/pull/7"}' '{"html_url":"https://github.com.evil.com/acme/widget/pull/7"}' \
+  '{"html_url":"https://github.com/acme/widget/pull/7\n8"}' '{"html_url":"https://github.com/acme"}'; do
+  cres; printf '%s\n' "$resp" >"$CLD_DIR/create.json"
+  refused "cloud pr with response [$resp]" "unexpected pull request response" "${CLD[@]}" pr "${CPRARGS[@]}"
+done
+# The slug part of html_url compares case-insensitively (GitHub names are case-insensitive).
+cres; printf '{"html_url":"https://github.com/ACME/Widget/pull/12"}\n' >"$CLD_DIR/create.json"
+out=$("${CLD[@]}" pr "${CPRARGS[@]}" 2>&1 </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "https://github.com/ACME/Widget/pull/12" ] && ok || bad "cloud pr with a differently cased slug in html_url: rc=$rc out=$out"
+# M1: the default branch and the pushed branch are read from GitHub; any failure or mismatch refuses.
+cres; printf '{"html_url":"%s"}\n' "$CIURL" >"$CLD_DIR/create.json"; touch "$CLD_DIR/fail.ref"
+refused "cloud pr when the default branch ref call fails" "cannot read the default branch from GitHub" "${CLD[@]}" pr "${CPRARGS[@]}"
+[ ! -e "$T/pushed" ] && ! grep -qF '[POST]' "$CLD_DIR/gh.log" && ok || bad "cloud pr pushed or created after a ref failure"
+cres; printf '{"html_url":"%s"}\n' "$CIURL" >"$CLD_DIR/create.json"; touch "$CLD_DIR/fail.refbranch"
+refused "cloud pr when the branch ref call fails" "cannot read the branch from GitHub" "${CLD[@]}" pr "${CPRARGS[@]}"
+grep -qF '[POST]' "$CLD_DIR/gh.log" && bad "cloud pr created a PR after a branch ref failure" || ok
+cres; printf '{"html_url":"%s"}\n' "$CIURL" >"$CLD_DIR/create.json"
+printf '{"ref":"refs/heads/feat/widget","object":{"sha":"2222222222222222222222222222222222222222","type":"commit"}}\n' >"$CLD_DIR/refbranch.json"
+refused "cloud pr when GitHub disagrees with the loopback remote" "branch on GitHub is not at --expect-sha" "${CLD[@]}" pr "${CPRARGS[@]}"
+grep -qF '[POST]' "$CLD_DIR/gh.log" && bad "cloud pr created a PR though GitHub has another head" || ok
+cres; printf '{"html_url":"%s"}\n' "$CIURL" >"$CLD_DIR/create.json"
+refused "cloud pr with changed text" "changed since plan" "${CLD[@]}" pr --expect-sha "$CS" --expect-content "$ZERO" "${PRFILES[@]}"
+
+# ci: verdict mapping from check runs and commit statuses, over several pages.
+GROW merge
+ccase() { # name, draft, runs pages, status pages, verdict, skipped, [flag]
+  local n=$1 d=$2 want
+  cres; fixtures ".draft=$d" "$3" "$4"
+  out=$("${CLD[@]}" ci --pr 7 ${7:-} 2>"$T/cl.err" </dev/null); rc=$?
+  want=$(printf 'verdict: %s\nskipped: %s\ndraft: %s\nurl: %s\nhead: %s' "$5" "$6" "$d" "$CIURL" "$CS")
+  [ "$rc" = 0 ] && [ "$out" = "$want" ] && [ ! -s "$T/cl.err" ] && ok || bad "cloud ci $n: rc=$rc out=$out err=$(cat "$T/cl.err")"
+  apionly "cloud ci $n"
+}
+ccase "passed" false "$DEFRUNS" "$DEFSTAT" passed -
+ccase "passed with only a commit status" false "$(rpage "")" "$DEFSTAT" passed -
+ccase "passed on a draft" true "$DEFRUNS" "$DEFSTAT" passed -
+ccase "passed names the skipped check" false "$(rpage "$R_OK,$R_SKIP")" "$DEFSTAT" passed lint
+ccase "failed check run" false "$(rpage "$R_OK,$R_FAIL")" "$DEFSTAT" failed -
+ccase "failed commit status" false "$DEFRUNS" "$(spage "$S_OK,$S_BAD")" failed -
+ccase "failed outranks pending" false "$(rpage "$R_PEND,$R_FAIL")" "$DEFSTAT" failed -
+ccase "pending check run" false "$(rpage "$R_OK,$R_PEND")" "$DEFSTAT" pending -
+ccase "pending commit status" false "$DEFRUNS" "$(spage "$S_PEND")" pending -
+ccase "skipped-only" false "$(rpage "$R_SKIP")" "$(spage "")" skipped-only lint
+ccase "none" false "$(rpage "")" "$(spage "")" none -
+ccase "pagination: a failure on the second check-runs page" false "$(rpage "$R_OK")"$'\n'"$(rpage "$R_FAIL")" "$DEFSTAT" failed -
+ccase "pagination: a pending check on the second status page" false "$DEFRUNS" "$(spage "$S_OK")"$'\n'"$(spage "$S_PEND")" pending -
+ccase "pagination: both pages succeed" false "$(rpage "$R_OK")"$'\n'"$(rpage "$R_OK")" "$DEFSTAT"$'\n'"$DEFSTAT" passed -
+ccase "after-ready: success plus skipped is pending" true "$(rpage "$R_OK,$R_SKIP")" "$DEFSTAT" pending lint --after-ready
+ccase "after-ready: skipped only is pending" true "$(rpage "$R_SKIP")" "$(spage "")" pending lint --after-ready
+ccase "after-ready: nothing yet is pending" true "$(rpage "")" "$(spage "")" pending - --after-ready
+ccase "after-ready: failing stays failed" true "$(rpage "$R_FAIL")" "$DEFSTAT" failed - --after-ready
+ccase "after-ready: success only stays passed" true "$DEFRUNS" "$DEFSTAT" passed - --after-ready
+# The exact, read-only REST calls.
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; "${CLD[@]}" ci --pr 7 >/dev/null 2>&1 </dev/null
+want=$(printf '[api] [repos/acme/widget/pulls/7] \n[api] [--paginate] [repos/acme/widget/commits/%s/check-runs?per_page=100] \n[api] [--paginate] [repos/acme/widget/commits/%s/status?per_page=100] ' "$CS" "$CS")
+[ "$(cat "$CLD_DIR/gh.log")" = "$want" ] && ok || bad "cloud ci gh calls: $(cat "$CLD_DIR/gh.log")"
+# Refusals.
+cirefuse() { # name, stderr substring
+  local o err rc
+  o=$("${CLD[@]}" ci --pr 7 2>"$T/cl.err" </dev/null); rc=$?; err=$(cat "$T/cl.err")
+  [ "$rc" = 2 ] && [ -z "$o" ] && printf '%s' "$err" | grep -qF -- "$2" && ok || bad "cloud ci $1: rc=$rc out=$o err=$err"
+  apionly "cloud ci $1"
+}
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; touch "$CLD_DIR/fail.pr"; cirefuse "gh error" "cannot read pull request"
+cres; fixtures '.head.sha="0123456789ABCDEF0123456789ABCDEF01234567"' "$DEFRUNS" "$DEFSTAT"; cirefuse "uppercase head sha" "cannot read pull request"
+cres; fixtures '.head.sha="abc"' "$DEFRUNS" "$DEFSTAT"; cirefuse "short head sha" "cannot read pull request"
+cres; fixtures . 'not json' "$DEFSTAT"; cirefuse "invalid check-runs json" "cannot read pull request"
+cres; fixtures . "$DEFRUNS" '{"statuses":"x"}'; cirefuse "bad statuses shape" "cannot read pull request"
+cres; fixtures '.html_url="http://github.com/acme/widget/pull/7"' "$DEFRUNS" "$DEFSTAT"; cirefuse "non-https url" "unexpected"
+cres; fixtures '.draft="no"' "$DEFRUNS" "$DEFSTAT"; cirefuse "draft not a boolean" "unexpected"
+for lv in pr push commit; do
+  if [ "$lv" = commit ]; then GROW commit '-'; else GROW "$lv"; fi
+  cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+  refused "cloud ci at level $lv" "too low" "${CLD[@]}" ci --pr 7
+  [ ! -s "$CLD_DIR/gh.log" ] && ok || bad "cloud ci at level $lv reached gh"
+done
+GROW merge
+
+# merge: REST squash merge guarded by --expect-sha.
+CMERGE=("${CLD[@]}" merge --pr 7 --expect-sha "$CS")
+CMARK=("${CLD[@]}" merge --mark-ready-only --pr 7 --expect-sha "$CS")
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+out=$("${CMERGE[@]}" 2>"$T/cl.err" </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "7 $CS" ] && [ ! -s "$T/cl.err" ] && ok || bad "cloud merge: rc=$rc out=$out err=$(cat "$T/cl.err")"
+grep -qxF "[api] [--method] [PUT] [repos/acme/widget/pulls/7/merge] [-f] [merge_method=squash] [-f] [sha=$CS] [-f] [commit_title=feat: add widget] [-f] [commit_message=] " "$CLD_DIR/gh.log" && ok || bad "cloud merge PUT argv: $(cat "$CLD_DIR/gh.log")"
+want=$(printf '[api] [repos/acme/widget/git/ref/heads/main] \n[api] [repos/acme/widget/pulls/7] \n[api] [--paginate] [repos/acme/widget/commits/%s/check-runs?per_page=100] \n[api] [--paginate] [repos/acme/widget/commits/%s/status?per_page=100] \n[api] [--paginate] [repos/acme/widget/pulls/7/files?per_page=100] ' "$CS" "$CS")
+[ "$(sed '$d' "$CLD_DIR/gh.log")" = "$want" ] && [ "$(wc -l <"$CLD_DIR/gh.log" | tr -d ' ')" = 6 ] && ok || bad "cloud merge made unexpected gh calls: $(cat "$CLD_DIR/gh.log")"
+apionly "cloud merge"
+cmr() { # name, stderr substring, fixture filter, [runs pages], [status pages]
+  cres; fixtures "$3" "${4:-$DEFRUNS}" "${5:-$DEFSTAT}"
+  refused "cloud merge $1" "$2" "${CMERGE[@]}"; noput "cloud merge $1"; apionly "cloud merge $1"
+}
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; printf 'gh: Head branch was modified. Review and try the merge again. (HTTP 409)\n' >"$CLD_DIR/merge.err"
+refused "cloud merge 409" "pull request head no longer matches --expect-sha; GitHub refused the merge" "${CMERGE[@]}"; apionly "cloud merge 409"
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; printf 'gh: Pull Request is not mergeable (HTTP 405)\n' >"$CLD_DIR/merge.err"
+refused "cloud merge 405" "GitHub reports the pull request is not mergeable" "${CMERGE[@]}"
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; printf 'gh: Server Error (HTTP 500)\n' >"$CLD_DIR/merge.err"
+refused "cloud merge other failure" "gh could not merge the pull request" "${CMERGE[@]}"
+for lv in off commit push pr; do
+  case "$lv" in
+    off) printf '' >"$REG"; want="not registered" ;;
+    commit) GROW commit '-'; want="too low" ;;
+    *) GROW "$lv"; want="too low" ;;
+  esac
+  cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+  refused "cloud merge at level $lv" "$want" "${CMERGE[@]}"
+  [ ! -s "$CLD_DIR/gh.log" ] && ok || bad "cloud merge at level $lv reached gh"
+done
+GROW merge
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+refused "cloud merge sha mismatch with HEAD" "does not match" "${CLD[@]}" merge --pr 7 --expect-sha 1111111111111111111111111111111111111111
+[ ! -s "$CLD_DIR/gh.log" ] && ok || bad "cloud merge with a wrong --expect-sha reached gh"
+cmr "pr head sha differs" "does not match --expect-sha" '.head.sha="2222222222222222222222222222222222222222"'
+cmr "wrong head branch" "head branch differs" '.head.ref="feat/other"'
+cmr "wrong base" "registered default" '.base.ref="develop"'
+cmr "cross-repository" "cross-repository" '.head.repo.full_name="evil/widget"'
+cmr "deleted fork head" "cross-repository" '.head.repo=null'
+cmr "closed" "not open" '.state="closed"'
+cmr "merged" "not open" '.state="closed" | .merged_at="2026-01-01T00:00:00Z"'
+cmr "draft" "pull request is a draft" '.draft=true'
+cmr "ci failing" "CI checks are failing" . "$(rpage "$R_FAIL")" "$DEFSTAT"
+cmr "ci failing status" "CI checks are failing" . "$DEFRUNS" "$(spage "$S_BAD")"
+cmr "ci pending" "still pending" . "$(rpage "$R_PEND")" "$DEFSTAT"
+cmr "ci none" "no CI checks" . "$(rpage "")" "$(spage "")"
+cmr "ci skipped-only" "every check was skipped or neutral" . "$(rpage "$R_SKIP")" "$(spage "")"
+cmr "ci failure on the second page" "CI checks are failing" . "$(rpage "$R_OK")"$'\n'"$(rpage "$R_FAIL")" "$DEFSTAT"
+cmr "null body has no headings" "PR body is missing the heading" '.body=null'
+cmr "title not conventional" "Conventional" '.title="add widget"'
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; touch "$CLD_DIR/fail.pr"
+refused "cloud merge gh view error" "cannot read pull request" "${CMERGE[@]}"; noput "cloud merge gh view error"
+
+# M1: the merge base and the file list come from the REST API. The local commits only touch a.txt, so the
+# loopback remote and the local scan see nothing; GitHub's view of the pull request is what is checked.
+cmf() { # name, stderr substring, files.json content (or fail), [file in CLD_DIR to write, its content]
+  cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+  if [ "$3" = fail ]; then touch "$CLD_DIR/fail.files"; else printf '%s\n' "$3" >"$CLD_DIR/files.json"; fi
+  [ -z "${4:-}" ] || printf '%s\n' "$5" >"$CLD_DIR/$4"
+  refused "cloud merge $1" "$2" "${CMERGE[@]}"; noput "cloud merge $1"; apionly "cloud merge $1"
+}
+PFWHY="merge never accepts these changes"
+for p in .github/workflows/x.yml .claude/hooks/x.sh .claude/settings.json CLAUDE.md sub/CLAUDE.md CLAUDE.local.md .mcp.json CODEOWNERS; do
+  cmf "files list names $p" "CI policy file changed in pull request 7: $p; $PFWHY" "[{\"filename\":\"a.txt\"},{\"filename\":\"$p\",\"status\":\"modified\"}]"
+done
+cmf "rename away from a policy file" "CI policy file changed in pull request 7: .claude/settings.json; $PFWHY" '[{"filename":"moved.json","previous_filename":".claude/settings.json","status":"renamed"}]'
+cmf "policy file on the second page" "CI policy file changed in pull request 7: .github/workflows/x.yml; $PFWHY" "$(printf '[{"filename":"a.txt"}]\n[{"filename":".github/workflows/x.yml"}]')"
+GROW merge main conventional ci
+cmf "policy file even with a ci row" "CI policy file changed in pull request 7: .github/workflows/x.yml; $PFWHY" '[{"filename":".github/workflows/x.yml"}]'
+GROW merge
+cmf "files list call fails" "cannot list the files of pull request 7" fail
+for fj in 'not json' '' '{"filename":"a.txt"}' '[{"filename":7}]' '[{"name":"a.txt"}]' '[{"filename":"a.txt","previous_filename":3}]' '["a.txt"]'; do
+  cmf "files list shape [$fj]" "unexpected pull request file list" "$fj"
+done
+cmf "files list at the GitHub cap" "lists 3000 files" "$(jq -nc '[range(3000) | {filename: "f\(.).txt"}]')"
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; jq -nc '[range(2999) | {filename: "f\(.).txt"}]' >"$CLD_DIR/files.json"
+out=$("${CMERGE[@]}" 2>&1 </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "7 $CS" ] && ok || bad "cloud merge with 2999 files must pass: rc=$rc out=$out"
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; printf '[]\n' >"$CLD_DIR/files.json"
+passes "cloud merge with an empty files list" "${CMERGE[@]}"
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; printf '[{"filename":"claude/settings.json"},{"filename":"CLAUDE.md.bak"},{"filename":".github/ISSUE_TEMPLATE/x.md"}]\n' >"$CLD_DIR/files.json"
+passes "cloud merge with lookalike paths in the files list" "${CMERGE[@]}"
+# The default branch ref: any failure or odd answer refuses before the pull request is read.
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"; touch "$CLD_DIR/fail.ref"
+refused "cloud merge when the ref call fails" "cannot read the default branch from GitHub" "${CMERGE[@]}"; noput "cloud merge ref failure"
+grep -qF 'pulls/7' "$CLD_DIR/gh.log" && bad "cloud merge read the pull request after a ref failure" || ok
+MAINSHA=$(git rev-parse main)
+UPMAIN=$(printf '%s' "$MAINSHA" | tr 'a-f' 'A-F')
+for rj in '{"ref":"refs/heads/other","object":{"sha":"'"$MAINSHA"'","type":"commit"}}' \
+  '{"ref":"refs/heads/main","object":{"sha":"'"$MAINSHA"'","type":"tag"}}' \
+  '{"ref":"refs/heads/main","object":{"sha":"'"$UPMAIN"'","type":"commit"}}' \
+  '{"ref":"refs/heads/main","object":{"sha":"abc","type":"commit"}}' \
+  '[{"ref":"refs/heads/main","object":{"sha":"'"$MAINSHA"'","type":"commit"}}]' \
+  '{"ref":"refs/heads/main","object":null}' 'not json'; do
+  cmf "ref answer [$rj]" "cannot read the default branch from GitHub" '[]' ref.json "$rj"
+done
+cmf "ref at a commit missing locally" "default branch on the remote is newer than local history" '[]' ref.json \
+  '{"ref":"refs/heads/main","object":{"sha":"3333333333333333333333333333333333333333","type":"commit"}}'
+# Moving the local remote-tracking ref cannot shift the base: GitHub's main is used.
+git update-ref refs/remotes/origin/main HEAD
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+passes "cloud merge ignores a moved local origin/main" "${CMERGE[@]}"
+git update-ref -d refs/remotes/origin/main
+
+# L4: GitHub owner/repo names are case-insensitive; two rows that match that way are ambiguous.
+printf 'github:ACME/Widget\t-\tmerge\tmain\tconventional\t-\n' >"$REG"
+"${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "cloud row with a differently cased slug must match"
+for u in https://github.com/Acme/WIDGET.git http://local_proxy@127.0.0.1:41234/git/ACME/widget; do
+  git remote set-url origin "$u"
+  "${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "cloud origin with a differently cased slug must match: $u"
+done
+git remote set-url origin "$CPROXY"
+printf 'github:acme/widget\t-\tmerge\tmain\tconventional\t-\ngithub:ACME/widget\t-\tpush\tmain\tconventional\t-\n' >"$REG"
+cres
+refused "ambiguous github rows (case)" "more than one github: registry row" "${CLD[@]}" status
+refused "ambiguous github rows block merge" "more than one github: registry row" "${CMERGE[@]}"
+[ ! -s "$CLD_DIR/gh.log" ] && [ ! -e "$T/pushed" ] && ok || bad "ambiguous rows reached gh or push"
+printf 'github:acme/widget\t-\tmerge\tmain\tconventional\t-\ngithub:acme/widget\t-\tmerge\tmain\tconventional\t-\n' >"$REG"
+refused "ambiguous github rows (exact duplicate)" "more than one github: registry row" "${CLD[@]}" status
+printf 'github:acme/widget\t-\tmerge\tmain\tconventional\t-\ngithub:acme/widget2\t-\tpush\tmain\tconventional\t-\n%s\thttps://github.com/acme/widget.git\tpush\tmain\tconventional\t-\n' "$CKEY" >"$REG"
+"${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "a different repo row and a local row are not ambiguous"
+GROW merge
+
+# L3: the push goes to the verified URL; a failing push never prints the URL's userinfo.
+git remote set-url origin "$LEAKURL"
+cres; touch "$T/push.fail"
+out=$("${CLD[@]}" pr "${CPRARGS[@]}" 2>&1 </dev/null); rc=$?
+[ "$rc" != 0 ] && printf '%s' "$out" | grep -qF '://***@localhost:8080/git/acme/widget.git' && ok || bad "failed push output: rc=$rc out=${out//$FAKE_PW/<masked>}"
+printf '%s' "$out" | grep -qF "$FAKE_PW" && bad "failed push printed the URL userinfo" || ok
+grep -qF '[POST]' "$CLD_DIR/gh.log" && bad "cloud pr created a PR after a failed push" || ok
+git remote set-url origin "$CPROXY"
+
+# L2: gh runs with the passwd home and its gh config dir, whatever the caller exports.
+cres; fixtures . "$DEFRUNS" "$DEFSTAT"
+HOME=/nonexistent-home GH_CONFIG_DIR=/nonexistent-gh "${CLD[@]}" ci --pr 7 >/dev/null 2>&1 </dev/null
+GHENV=$(cat "$CLD_DIR/gh.env" 2>/dev/null)
+case "$GHENV" in
+  /nonexistent*|*'|/nonexistent'*|'|'*|*'|') bad "gh environment was not pinned: $GHENV" ;;
+  *) [ "${GHENV#*|}" = "${GHENV%%|*}/.config/gh" ] && [ -d "${GHENV%%|*}" ] && ok || bad "gh environment: $GHENV" ;;
+esac
+# mark-ready needs GraphQL, which the cloud blocks.
+CMARKWHY="cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr 7 --after-ready"
+cres; fixtures '.draft=true' "$DEFRUNS" "$DEFSTAT"
+refused "cloud mark-ready-only on a draft" "$CMARKWHY" "${CMARK[@]}"; noput "cloud mark-ready-only"; apionly "cloud mark-ready-only"
+cres; fixtures '.draft=false' "$DEFRUNS" "$DEFSTAT"
+refused "cloud mark-ready-only on a non-draft" "applies to drafts only" "${CMARK[@]}"; apionly "cloud mark-ready-only non-draft"
+
+# enable and disable stay local: they need a terminal, and never touch github: rows.
+GROW merge; cp "$REG" "$T/reg.cloud"
+for sub in "enable commit" "disable"; do
+  err=$(printf 'widget\n' | env CLAUDE_CODE_REMOTE=true "$CL0" $sub 2>&1 >/dev/null); rc=$?
+  [ "$rc" = 2 ] && printf '%s' "$err" | grep -qF "own terminal" && ok || bad "cloud $sub without a terminal: rc=$rc err=$err"
+done
+cmp -s "$REG" "$T/reg.cloud" && ok || bad "refused cloud enable/disable changed the registry"
+out=$(printf 'widget\n' | "${CLD[@]}" enable commit 2>&1); rc=$?
+[ "$rc" = 0 ] && ok || bad "enable commit with CLAUDE_CODE_REMOTE set: rc=$rc out=$out"
+grep -qxF "$(cat "$T/reg.cloud")" "$REG" && ok || bad "enable dropped the github row: $(cat "$REG")"
+[ "$(awk -F'\t' -v k="$CKEY" '$1 == k {print $3}' "$REG")" = commit ] && ok || bad "enable did not write the local row: $(cat "$REG")"
+"${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "cloud status after enable must still read the github row"
+"${LOC[@]}" status | grep -x 'level: commit' >/dev/null && ok || bad "local status after enable must read the local row"
+out=$("${CLD[@]}" disable 2>&1); rc=$?
+[ "$rc" = 0 ] && grep -qxF "$(cat "$T/reg.cloud")" "$REG" && ! grep -qF "$CKEY" "$REG" && ok || bad "disable must drop only the local row: rc=$rc out=$out reg=$(cat "$REG")"
+"${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "cloud status after disable must still read the github row"
 cd "$T/m" || exit 1
 [ -z "$(ls -A "$T/tmp")" ] && ok || bad "private temp copies left behind after merge cases: $(ls "$T/tmp")"
 cd / || exit 1

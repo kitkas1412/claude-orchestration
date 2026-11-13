@@ -3,8 +3,9 @@
 # Exit code 2 blocks the call and returns stderr to Claude.
 # Defense in depth, NOT a sandbox. Requires jq. Matching is case-insensitive.
 set -f
+command -v jq >/dev/null 2>&1 || { echo "BLOCKED: jq is required by guard-bash" >&2; exit 2; }
 INPUT=$(cat)
-CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
+CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty') || { echo "BLOCKED: guard-bash could not parse its JSON input" >&2; exit 2; }
 [ -z "$CMD" ] && exit 0
 
 deny() {
@@ -108,6 +109,16 @@ PCFG="${HOMEP}/(\.claude/(hooks|agents|skills|settings[^/[:space:]]*\.json|CLAUD
 PROOT="${HOMEP}/\.claude/?([[:space:])\`]|$)"
 WRITER="(^|[[:space:](\`])(mv|rm|unlink|tee|truncate|touch|chmod|chown|chflags|sed[[:space:]]+([^;&|]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)|perl[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*i[a-zA-Z]*)([[:space:]]|$)"
 COPIER="(^|[[:space:](\`])(cp|install|ln|rsync|ditto)[[:space:]]"
+# A project's .claude/hooks and .claude/settings*.json at any prefix (none, ./, ../x/, absolute).
+# In cloud sessions these project hooks are the only guards. Reads stay allowed; writes are denied.
+PNAME='\.claude/(hooks|rules|agents|settings[^/[:space:]]*\.json|[^[:space:]/]*[*?[{][^[:space:]/]*)'
+PEND='([/[:space:])`]|$)'
+PREND='([[:space:])`]|$)'
+PB='(^|[[:space:]=>(`]|/)'
+PROJ="${PB}(${PNAME}${PEND}|\.claude(/\.?)?${PREND})"
+PROJ_DEST="${PB}(${PNAME}(/[^[:space:]]*)?|\.claude(/\.?)?)[)\`]*[[:space:]]*$|[[:space:]](-t|--target-directory)[=[:space:]]*([^[:space:]]*/)?(${PNAME}${PEND}|\.claude(/\.?)?${PREND})"
+# ">|" is split at "|" below, so check it on the whole command.
+ns ">\|[[:space:]]*(${PCFG}|([^[:space:]]*/)?${PNAME}${PEND})" && deny "write to protected configuration"
 CWD_P=""
 while IFS= read -r seg; do
   seg_has() { printf '%s' "$seg" | grep -Eiq -- "$1"; }
@@ -124,6 +135,8 @@ while IFS= read -r seg; do
       CWD_P='~'
     elif printf '%s' "$target" | grep -Eiq -- "^${HOMEP}(/|$)"; then
       CWD_P=$target
+    elif printf '%s' "$target" | grep -Eiq -- '(^|/)\.claude(/|$)'; then
+      CWD_P=$target
     elif [ -n "$PREV_P" ] && printf '%s' "$target" | grep -Eq '^[^/~$-]' && ! printf '%s' "$target" | grep -Eq '(^|/)\.\.(/|$)'; then
       CWD_P="$PREV_P/${target#./}"
     fi
@@ -133,6 +146,11 @@ while IFS= read -r seg; do
     rest=$(printf '%s' "${trimmed#"$first"}" | sed -E -e 's#(^|[[:space:]>])\./#\1#g' -e "s#(^|[[:space:]>])([^/~\$[:space:]>-][^[:space:]>]*)#\1${CWD_P}/\2#g")
     pseg="$first$rest"
   fi
+  # Case-sensitive on this segment: -S/--staged unstages only; -s is --source and -W/--worktree writes files.
+  restore_staged_only() {
+    printf '%s' "$cmdseg" | grep -Eq -- '(^|[[:space:]])(--staged|-[a-rt-zA-Z]*S[a-rt-zA-Z]*)([[:space:]=]|$)' \
+      && ! printf '%s' "$cmdseg" | grep -Eq -- '(^|[[:space:]])(--worktree|-[a-zA-Z]*W[a-zA-Z]*)([[:space:]=]|$)'
+  }
   pseg_has() { printf '%s' "$pseg" | grep -Eiq -- "$1"; }
   cmdseg_has() { printf '%s' "$cmdseg" | grep -Eiq -- "$1"; }
   pseg_has ">[[:space:]]*[^[:space:]]*\.git/(config|info/grafts)([[:space:])\`]|$)" && deny "write to repository git config"
@@ -142,6 +160,37 @@ while IFS= read -r seg; do
     if cmdseg_has "$COPIER"; then
       pseg_has "${PCFG}[^[:space:]]*[)\`]*[[:space:]]*$|[[:space:]](-t|--target-directory)[=[:space:]]*${PCFG}" && deny "write to protected configuration"
     fi
+  fi
+  pseg_has ">[[:space:]]*([^[:space:]]*/)?${PNAME}${PEND}"               && deny "write to project .claude hooks or settings"
+  if pseg_has "$PROJ"; then
+    cmdseg_has "$WRITER"                                                  && deny "write to project .claude hooks or settings"
+    cmdseg_has "$COPIER" && pseg_has "$PROJ_DEST"                         && deny "write to project .claude hooks or settings"
+    # git checkout/restore and patch rewrite the named files in place.
+    # "git restore --staged" without --worktree/-W only unstages, so it is allowed here.
+    if cmdseg_has "${CS}${P}(git[[:space:]]+${G}(checkout|restore)|patch)([[:space:]]|$)"; then
+      if cmdseg_has "${CS}${P}git[[:space:]]+${G}restore([[:space:]]|$)" \
+         && ! cmdseg_has "${CS}${P}(git[[:space:]]+${G}checkout|patch)([[:space:]]|$)" \
+         && restore_staged_only; then
+        :
+      else
+        deny "write to project .claude hooks or settings"
+      fi
+    fi
+  fi
+  # Download, extract and unzip destinations (an option names the target directory or file).
+  PDEST="[=[:space:]]*([^[:space:]]*/)?(${PNAME}${PEND}|\\.claude(/\\.?)?${PREND})"
+  # Any git restore segment other than a staged-only one rewrites the working tree.
+  if cmdseg_has "${CS}${P}git[[:space:]]+${G}restore([[:space:]]|$)"; then
+    restore_staged_only || deny "git restore of working tree"
+  fi
+  # curl -o/--output are case-sensitive: -O (remote-name) writes to the cwd, which is not protected.
+  # Match the flag case-insensitively with the path, then require a lowercase o in the flag itself.
+  cmdseg_has "${CS}${P}curl[[:space:]]"  && printf '%s' "$pseg" | grep -Eio -- "(^|[[:space:]])(-[a-z]*o|--output(-dir)?)${PDEST}" \
+    | grep -Eq -- '^[[:space:]]*(-[a-zA-Z]*o|--output(-dir)?)' && deny "download into project .claude hooks or settings"
+  cmdseg_has "${CS}${P}wget[[:space:]]"  && pseg_has "(^|[[:space:]])(-[a-z]*o|--output-document|-P|--directory-prefix)${PDEST}" && deny "download into project .claude hooks or settings"
+  cmdseg_has "${CS}${P}unzip[[:space:]]" && pseg_has "(^|[[:space:]])-d${PDEST}"                             && deny "unzip into project .claude hooks or settings"
+  if cmdseg_has "${CS}${P}tar[[:space:]]" && pseg_has "(^|[[:space:]])(-[a-z]*x[a-z]*|--extract|--get)([[:space:]]|$)|tar[[:space:]]+[a-z]*x"; then
+    pseg_has "(^|[[:space:]])(-[a-z]*C|--directory)${PDEST}" && deny "extract into project .claude hooks or settings"
   fi
   nq=$(printf '%s' "$seg" | tr -d "\"'")
   nq_has() { printf '%s' "$nq" | grep -Eiq -- "$1"; }
@@ -171,7 +220,6 @@ done <<< "$(printf '%s' "$N" | tr ';&|' '\n\n\n')"
 has "${S}git[[:space:]]+${G}reset[[:space:]]+${G}--hard"               && deny "git reset --hard"
 has "${S}git[[:space:]]+${G}clean[[:space:]]+${G}-[a-zA-Z]*[fdx]"      && deny "git clean"
 has "${S}git[[:space:]]+${G}checkout[[:space:]]+(--[[:space:]]|\.([[:space:]]|$))" && deny "git checkout discarding changes"
-has "${S}git[[:space:]]+${G}restore[[:space:]]" && ! has "--staged"    && deny "git restore of working tree"
 printf '%s' "$CMD" | grep -Eq -- "${S}git[[:space:]]+${G}branch[[:space:]]+${G}-D([[:space:]]|$)" && deny "git branch -D"
 has "${S}git[[:space:]]+${G}stash[[:space:]]+(drop|clear)"             && deny "git stash drop/clear"
 has "${S}git[[:space:]]+${G}(filter-branch|filter-repo|reflog[[:space:]]+expire|gc[[:space:]]+--prune)" && deny "history rewriting"
