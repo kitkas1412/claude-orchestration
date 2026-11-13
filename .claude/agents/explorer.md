@@ -3,6 +3,7 @@ name: explorer
 description: "Use PROACTIVELY to find files, symbols, entry points, conventions and build/test commands, or to answer where/how X is implemented. Read-only and fast. Does NOT analyze root causes, design solutions or edit anything."
 tools: Read, Grep, Glob
 model: haiku
+effort: low
 maxTurns: 25
 color: cyan
 ---
