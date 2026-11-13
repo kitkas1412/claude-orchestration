@@ -12,7 +12,7 @@ Use when preparing commits, pull requests or releases. The project's own convent
 ## Procedure
 
 1. Check the current branch and working tree with read-only commands. Report unrelated changes.
-2. One task = one new feature branch from the repository's default branch (the `default branch:` line of `git-publish.sh status`, else `git symbolic-ref --short refs/remotes/origin/HEAD`, else `main`): `git fetch origin <base>`, check `git rev-parse --verify origin/<base>` (stop if it fails), then `git switch --no-track -c <type>/<kebab-summary> origin/<base>`. `--no-track` keeps git from setting `origin/<base>` as the upstream. Stop if the working tree is dirty; the user commits or stashes. Never use git worktrees (`git worktree add` and `move` are denied by the guard).
+2. One task = one new feature branch from the repository's default branch (the `default branch:` line of `git-publish.sh status`, else `git symbolic-ref --short refs/remotes/origin/HEAD`, else `main`): `git fetch origin <base>`, check `git rev-parse --verify origin/<base>` (stop if it fails), then `git switch --no-track -c <type>/<kebab-summary> origin/<base>`. `--no-track` keeps git from setting `origin/<base>` as the upstream. Stop if the working tree is dirty; the user commits or stashes. Never run `git worktree add` or `move` (the guard denies them); worktrees come only from the orchestrator's `EnterWorktree` mode.
 3. Write commit messages in the project's format. If none exists, use Conventional Commits.
 4. Determine the version from commits since the last tag:
    - Major: breaking change.
@@ -65,7 +65,7 @@ Use when preparing commits, pull requests or releases. The project's own convent
 - Direct `git push`, `gh pr create` or `gh pr merge` by an agent. Use the `git-publish.sh` route, and only `release-manager`.
 - Running the merging `merge` without the user's confirmation of the PR link and a `passed` verdict, or running `enable`/`disable`.
 - Committing without checking `git-publish.sh status`.
-- Creating a git worktree, or branching from anything other than the default branch.
+- Creating a worktree with `git worktree add`, or branching from anything other than the default branch (the orchestrator's `EnterWorktree` mode is the exception).
 - Rewriting shared history.
 - Skipping hooks to make a commit succeed. This still applies to agents' commits; the publish route skips repo hooks by design.
 - Mixing refactoring and behavior changes in one commit.
