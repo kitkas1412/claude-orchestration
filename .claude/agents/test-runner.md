@@ -3,6 +3,7 @@ name: test-runner
 description: "Use PROACTIVELY after any code change to run tests, linters, type-checkers and builds and report only failures. Keeps long output out of the main context. Does NOT edit files or fix failures."
 tools: Read, Grep, Glob, Bash
 model: haiku
+effort: low
 maxTurns: 15
 color: yellow
 ---

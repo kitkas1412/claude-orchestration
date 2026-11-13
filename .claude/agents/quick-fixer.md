@@ -3,6 +3,7 @@ name: quick-fixer
 description: "Use for mechanical code edits with an exact target: typos in code, renames in 1-2 files, formatting, small config value changes. Handles C1 and R1 work only. Does NOT handle logic changes, documentation, dependencies, or anything needing design."
 tools: Read, Grep, Glob, Edit
 model: haiku
+effort: low
 maxTurns: 15
 color: green
 ---

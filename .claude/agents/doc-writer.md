@@ -3,6 +3,7 @@ name: doc-writer
 description: "Use when the deliverable is documentation: README, ADR, changelog, docstrings, API docs, how-to guides, including documentation typos. Handles writing verified against the code. Does NOT change code behavior."
 tools: Read, Grep, Glob, Edit, Write
 model: haiku
+effort: medium
 skills:
   - docs-writing
 maxTurns: 25
