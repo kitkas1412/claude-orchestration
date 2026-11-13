@@ -139,7 +139,7 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 ~/.claude/hooks/git-publish.sh disable
 ```
 
-- Always on, independent of the git level: one task = one branch. Before any write-capable agent runs, the orchestrator has `release-manager` create `<type>/<kebab-summary>` from the default branch (`git switch --no-track -c`); a dirty working tree stops it and you commit or stash yourself. Git worktrees are never used, and `guard-bash.sh` denies `git worktree add` and `move`. Tasks that change nothing need no branch.
+- Always on, independent of the git level: one task = one branch. Before any write-capable agent runs, the orchestrator has `release-manager` create `<type>/<kebab-summary>` from the default branch (`git switch --no-track -c`); a dirty working tree stops it and you commit or stash yourself. If `<repo root>/.worktreeinclude` exists or the session is already inside `.claude/worktrees/`, the orchestrator instead works in a Claude Code worktree (see "Running projects in a worktree"); without that file nothing changes. Agents never run `git worktree add` or `move`, and `guard-bash.sh` denies them. Tasks that change nothing need no branch.
 - At `commit` or higher, `release-manager` may commit on a feature branch when the brief allows it.
 - `commit` works without an `origin` remote. `push` works with any registered `origin` that has no embedded credentials. `pr` and `merge` need a GitHub `origin`.
 - Only `release-manager` pushes, opens PRs and merges, and only through this route in a repository you registered at that level. `status`, `plan`, `push --expect-sha <sha>`, `pr --expect-sha <sha> --expect-content <sha256> --title-file F --body-file F` and `ci --pr <n>`, `merge --mark-ready-only --pr <n> --expect-sha <sha>` and `merge --pr <n> --expect-sha <sha>` need no TTY. A repository at a lower level or unregistered refuses them. `enable` and `disable` need a TTY and are yours alone. Direct `git push`, `gh pr create` and `gh pr merge` stay forbidden and blocked.
@@ -184,6 +184,28 @@ gh auth status   # the active account is unchanged
 - Downgrade: an older `git-publish.sh` treats a 7-column row as unregistered (fails closed), and an older `enable` rewrites the row without the account.
 - In account mode, git uses no credential helper other than the account's (the helper list is reset for every URL), the session bus variables reach only the `gh auth token` keyring call, proxy variables that contain a user name are dropped, and `gh` runs from `/` so that git filters configured in the repository never run with the token in their environment. Repo-local `filter.*` and `submodule.*.update` settings are refused for a repository with an account (for example git-crypt or nbstripout filters); other `submodule.*` settings stay allowed, and repositories without an account are not affected.
 - Residual exposure: these guards are best-effort, not a security boundary. An agent running as your user that can run commands in the background can read the token while `gh` or `git` run (for example with `ps eww`, which shows their environment). It can also read it from `gh`'s own keychain item or config file. The forced `PATH` includes `/opt/homebrew/bin` and `/usr/local/bin`, which your user can write, so such an agent could also replace `gh` or `git` there; this is the same class of exposure. Running the script as `bash <script>` with a `BASH_ENV` file, or with exported `exec`, `builtin` or `command` functions, runs that code before the script can re-run itself (closing this needs a `guard-bash.sh` rule, a planned follow-up).
+
+## Running projects in a worktree
+
+Opt-in, per repository. If `.worktreeinclude` exists at the repository root, the orchestrator calls `EnterWorktree` with the name `<type>-<kebab-summary>` (for example `feat-login`) instead of creating a branch. Claude Code creates `.claude/worktrees/<name>/` on branch `worktree-<name>` from the default branch and copies the gitignored files that match `.worktreeinclude`. `release-manager` then runs in WORKTREE-CHECK mode: it verifies the worktree, branch, clean tree and base, and lists the env file names only, never their contents. All later agents work in the worktree. Without `.worktreeinclude`, nothing changes and the branch workflow applies.
+
+`.worktreeinclude` uses `.gitignore` syntax. Only files that match a pattern and are gitignored are copied. Prefer explicit paths: a pattern that begins with `**/` has special rules.
+
+```text
+.env
+apps/web/.env.local
+```
+
+- The file holds patterns only, no secrets, so commit it.
+- Copies are snapshots. Editing the main `.env` later does not update existing worktrees.
+- Install dependencies inside the worktree.
+- A dev server in the worktree can clash on ports with one running in the main checkout.
+- The worktree and its branch stay after the task. To resume, ask the orchestrator for it or start Claude Code inside it. The orchestrator calls `ExitWorktree` only when you ask, and keeps the worktree unless you ask to remove it and the work is pushed or merged.
+- To clean up yourself after the branch is merged, run `git worktree remove <path>` in your own terminal. Agents never run `git worktree add` or `move`.
+- You can create the worktree yourself instead: `claude -w <name> --agent orchestrator`. A session already inside `.claude/worktrees/` always uses WORKTREE mode; for an unrelated new task, start a new session.
+- `.worktreeinclude` and the files it names must exist in the main checkout when the worktree is created.
+- Only worktrees created by Claude Code copy these files. A plain `git worktree add` does not.
+- The base is the remote default branch unless the Claude Code setting `worktree.baseRef` says otherwise (`fresh` is the default, `head` is the alternative).
 
 ## Layout
 

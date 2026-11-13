@@ -154,6 +154,12 @@ Cloud sessions load only the committed `.claude/` of the repository, not `~/.cla
 
 ## Changelog
 
+### 1.8.0 - 2026-11-13
+
+- Added an opt-in WORKTREE mode. When `<repo root>/.worktreeinclude` exists, the orchestrator (new tools `EnterWorktree` and `ExitWorktree`) calls `EnterWorktree` with the name `<type>-<kebab-summary>` before the first write-capable agent. Claude Code creates `.claude/worktrees/<name>/` on branch `worktree-<name>` from the default branch and copies the gitignored files that match `.worktreeinclude` (`.gitignore` syntax; root and nested paths such as `apps/web/.env.local`). Without the file, BRANCH mode is unchanged. A worktree already open for the same task is kept; if `EnterWorktree` fails or is denied, the orchestrator stops and asks instead of falling back.
+- Added the `release-manager` WORKTREE-CHECK mode (haiku, read-only, not level-gated): it verifies a linked worktree under `/.claude/worktrees/`, a `worktree-*` branch, a clean tree and a HEAD that equals or descends from `origin/<base>`, and lists the `.worktreeinclude` matches by file name only, never contents. BRANCH mode now stops with BLOCKED inside a Claude-created worktree. Every later brief carries the absolute worktree path as WORKDIR, and the final report adds the path, a note to install dependencies there and the port-clash warning. `ExitWorktree` runs only when the user asks; it keeps the worktree unless the user asks to remove it and the work is pushed or merged.
+- Unchanged: agents never create worktrees or pass `isolation: "worktree"` to the Agent tool, and `guard-bash.sh` still denies `git worktree add` and `move`. This supersedes the "never a worktree" rule of 1.5.0 for repositories that opt in.
+
 ### 1.7.0 - 2026-11-13
 
 - Added an optional per-repository GitHub account to `git-publish.sh`: `enable <push|pr|merge> --account <login>` (user terminal only) stores the login as an optional 7th registry column, so repositories owned by different accounts need no `gh auth switch`. `push`, `pr`, `merge` and `ci` fetch that account's token once (`gh auth token --user`, gh 2.40 or newer), check it with `gh api user`, and pass it to `gh` through `GH_TOKEN` and to `git push`/`ls-remote` through a credential helper for `https://github.com`. The token is never exported to the session, put on a command line or printed; caller `GH_TOKEN`/`GITHUB_TOKEN` are ignored in account mode, and a failure names the account with no fallback to the active gh account. `status` prints `account: <login>|active|-`.
