@@ -153,6 +153,11 @@ Cloud sessions load only the committed `.claude/` of the repository, not `~/.cla
 
 ## Changelog
 
+### 1.5.0 - 2026-11-13
+
+- Changed the workflow to one task = one branch, never a worktree. Before the first write-capable agent of any change (fast path included), the orchestrator delegates to `release-manager` (haiku) in the new BRANCH mode: it requires a clean working tree (otherwise BLOCKED and the user commits or stashes), fetches the default branch (registered `default branch:` from `git-publish.sh status`, else `origin/HEAD`, else `main`) and runs `git switch --no-track -c <type>/<kebab-summary> origin/<base>`. An existing branch name is BLOCKED; a retry keeps the task branch; tasks that change nothing need no branch.
+- The orchestrator never passes `isolation: "worktree"` to the Agent tool, and briefs now forbid creating worktrees and switching branches (except BRANCH mode). Parallel writers share the task branch under the existing file-ownership rule. `guard-bash.sh` denies `git worktree add` and `move`. The `git-workflow` skill replaces "from the agreed base" with the default-branch rule.
+
 ### 1.4.0 - 2026-11-13
 
 - Added Claude Code cloud support. `install.sh --project <repo> [--set-agent]` exports agents, skills, guard hooks, rules and settings into `<repo>/.claude/` for commit (never `git-publish.sh` or `apple-design`; merge only adds); `--no-backup` skips the `~/.claude` backup. Added experimental `cloud/setup.sh` for the environment setup script, which installs a pinned commit and registers `GRANTS` as `github:` rows.
