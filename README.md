@@ -124,6 +124,7 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 ~/.claude/hooks/git-publish.sh disable
 ```
 
+- Always on, independent of the git level: one task = one branch. Before any write-capable agent runs, the orchestrator has `release-manager` create `<type>/<kebab-summary>` from the default branch (`git switch --no-track -c`); a dirty working tree stops it and you commit or stash yourself. Git worktrees are never used, and `guard-bash.sh` denies `git worktree add` and `move`. Tasks that change nothing need no branch.
 - At `commit` or higher, `release-manager` may commit on a feature branch when the brief allows it.
 - `commit` works without an `origin` remote. `push` works with any registered `origin` that has no embedded credentials. `pr` and `merge` need a GitHub `origin`.
 - Only `release-manager` pushes, opens PRs and merges, and only through this route in a repository you registered at that level. `status`, `plan`, `push --expect-sha <sha>`, `pr --expect-sha <sha> --expect-content <sha256> --title-file F --body-file F` and `ci --pr <n>`, `merge --mark-ready-only --pr <n> --expect-sha <sha>` and `merge --pr <n> --expect-sha <sha>` need no TTY. A repository at a lower level or unregistered refuses them. `enable` and `disable` need a TTY and are yours alone. Direct `git push`, `gh pr create` and `gh pr merge` stay forbidden and blocked.
