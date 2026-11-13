@@ -56,7 +56,10 @@ mk_copy() { # $1 dest, $2 PATH prefix (may be empty)
   [ "$(grep -c '^REGISTRY=' "$dest")" = 1 ] || patch_fatal "REGISTRY assignments changed count"
   grep -q '^require_tty() { return 0; }; require_tty_original_unused() {$' "$dest" || patch_fatal "require_tty was not stubbed"
   grep -qxF "PATH=${pre}/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin" "$dest" || patch_fatal "PATH line was not rewritten"
-  ! grep -q 'GIT_CONFIG_GLOBAL' "$dest" || patch_fatal "GIT_CONFIG_GLOBAL is still unset by the patched copy"
+  # The clean-environment allowlist names GIT_CONFIG_GLOBAL too (so these test settings reach the copy); only the
+  # unset list entry must be gone.
+  ! grep -qF ' GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM ' "$dest" || patch_fatal "GIT_CONFIG_GLOBAL is still unset by the patched copy"
+  [ "$(grep -c 'GIT_CONFIG_GLOBAL' "$dest")" = "$(($(grep -c 'GIT_CONFIG_GLOBAL' "$SRC") - 1))" ] || patch_fatal "the patched copy lost more than the GIT_CONFIG_GLOBAL unset entry"
   bash -n "$dest" || patch_fatal "patched copy has a syntax error"
 }
 C="$T/c1/git-publish.sh"; mk_copy "$C" ""
@@ -92,23 +95,34 @@ esac
 exec "$REAL_GIT" "\$@"
 E
 chmod +x "$T/stub/gh" "$T/stub/git"
-# Fails any git call whose argument text contains $GP_FAIL; everything else goes to the real git.
+# The script runs in a clean environment (env -i plus an allowlist), so stubs take their settings from files.
+# Fails any git call whose argument text contains the text of $T/gp.fail; everything else goes to the real git.
 cat >"$T/stubfail/git" <<E
 #!/bin/bash
-[ -n "\${GP_FAIL:-}" ] && case "\$*" in *"\$GP_FAIL"*) echo "stub git: forced failure" >&2; exit 1 ;; esac
+GP_FAIL=\$(cat "$T/gp.fail" 2>/dev/null)
+[ -n "\$GP_FAIL" ] && case "\$*" in *"\$GP_FAIL"*) echo "stub git: forced failure" >&2; exit 1 ;; esac
 exec "$REAL_GIT" "\$@"
 E
 chmod +x "$T/stubfail/git"
-# Exits 2 (a grep error, not "no match") when its first argument equals $GP_GREP_FAIL; otherwise real grep.
+# Exits 2 (a grep error, not "no match") when its first argument equals the text of $T/gp.grepfail; otherwise real grep.
 REAL_GREP=$(command -v grep)
 cat >"$T/stubgrep/grep" <<E
 #!/bin/bash
-if [ -n "\${GP_GREP_FAIL:-}" ] && [ "\$1" = "\$GP_GREP_FAIL" ]; then echo "stub grep: forced failure" >&2; exit 2; fi
+GP_GREP_FAIL=\$(cat "$T/gp.grepfail" 2>/dev/null)
+if [ -n "\$GP_GREP_FAIL" ] && [ "\$1" = "\$GP_GREP_FAIL" ]; then echo "stub grep: forced failure" >&2; exit 2; fi
 exec "$REAL_GREP" "\$@"
 E
 chmod +x "$T/stubgrep/grep"
 
 # --- helpers ---
+with_trigger() { # file under $T, text, cmd...: runs cmd while the stub trigger file holds the text
+  local f="$T/$1" rc
+  printf '%s' "$2" >"$f"
+  shift 2
+  "$@"; rc=$?
+  rm -f "$f"
+  return "$rc"
+}
 refused() { # name, stderr substring, cmd...
   local n=$1 want=$2 err rc
   shift 2
@@ -328,10 +342,10 @@ refused "forbidden file added then removed" "forbidden file in commit $(short_of
 # --- a scan that cannot run refuses (fail closed) ---
 branch feat/failclosed; commit fc.txt x "feat: fc"
 passes "stub-git copy works when nothing is forced to fail" "$F" plan
-refused "git log failure" "cannot read commit" env GP_FAIL="log -1" "$F" plan
-refused "git diff --name-only failure" "cannot list files of commit" env GP_FAIL="--diff-filter=d" "$F" plan
-refused "git diff content failure" "cannot scan commit" env GP_FAIL="--unified=0" "$F" plan
-refused "git rev-list failure" "REFUSED" env GP_FAIL="rev-list" "$F" plan
+refused "git log failure" "cannot read commit" with_trigger gp.fail "log -1" "$F" plan
+refused "git diff --name-only failure" "cannot list files of commit" with_trigger gp.fail "--diff-filter=d" "$F" plan
+refused "git diff content failure" "cannot scan commit" with_trigger gp.fail "--unified=0" "$F" plan
+refused "git rev-list failure" "REFUSED" with_trigger gp.fail "rev-list" "$F" plan
 branch feat/order; commit o.txt "key=$FAKE_AWS" "feat: o"
 branch feat/order2; commit o.txt clean "feat: o2"
 git config diff.orderFile "$T/no-such-order-file"
@@ -432,6 +446,10 @@ git config --unset-all "url.https://u:${FAKE_PW}${AT}host.invalid/.insteadOf"
 git config url."$T/other.git".insteadOf "https://unrelated.invalid/"
 refused "repo-local url.*.insteadOf" "section 'url'" "$C" plan
 git config --unset-all url."$T/other.git".insteadOf
+# filter and submodule config is refused only for rows with an account (see the account section); LFS stays refused
+git config filter.lfs.clean "git-lfs clean -- %f"
+refused "filter.lfs keeps its own message" "Git LFS repositories are not supported" "$C" plan
+git config --unset filter.lfs.clean
 git config protocol.file.allow always
 refused "repo-local protocol.*" "section 'protocol'" "$C" plan
 git config --unset protocol.file.allow
@@ -508,8 +526,8 @@ git update-ref refs/heads/main "$MAIN_SHA"; git update-ref refs/remotes/origin/m
 # --- a grep error (rc 2) in the secret check refuses instead of passing ---
 branch feat/grepfail; commit gf.txt x "feat: gf"
 passes "stub-grep copy works when nothing is forced to fail" "$H" plan
-refused "grep error while scanning added lines" "cannot scan commit" env GP_GREP_FAIL=-anEi "$H" plan
-refused "grep error while scanning the commit message" "secret pattern in the commit message" env GP_GREP_FAIL=-aEiq "$H" plan
+refused "grep error while scanning added lines" "cannot scan commit" with_trigger gp.grepfail -anEi "$H" plan
+refused "grep error while scanning the commit message" "secret pattern in the commit message" with_trigger gp.grepfail -aEiq "$H" plan
 
 # --- push from a linked worktree ---
 git worktree add -q -b feat/linked "$T/wt2" main
@@ -672,12 +690,15 @@ mk_lockcopy() { # $1 dest, $2 PATH prefix (may be empty)
 }
 MS="$T/ms"; mkdir -p "$MS" "$T/stubm"
 export MS_DIR="$MS"
+# The script runs its children in a clean environment, so stubs read their settings from stub.env beside them.
+printf 'MS_DIR=%q\n' "$MS" >"$T/stubm/stub.env"
 L0="$T/c5/git-publish.sh"; mk_lockcopy "$L0" ""
 K0="$T/c6/git-publish.sh"; mk_lockcopy "$K0" "$T/stubm:"
 cp "$T/stub/git" "$T/stubm/git"
 # Stub gh: logs argv, serves the pr view fixture, fails on demand (fail.view, fail.ready, fail.merge).
 cat >"$T/stubm/gh" <<'E'
 #!/bin/bash
+. "${0%/*}/stub.env"
 for a in "$@"; do printf '[%s] ' "$a"; done >>"$MS_DIR/gh.log"; echo >>"$MS_DIR/gh.log"
 case "$1 $2" in
   "pr view") [ -e "$MS_DIR/fail.view" ] && { echo "stub view failure" >&2; exit 1; }; cat "$MS_DIR/pr.json" ;;
@@ -1183,11 +1204,13 @@ refused "shallow merge --mark-ready-only" "shallow" "$K0" merge --mark-ready-onl
 # Only `github:<owner>/<repo>` rows count there. GraphQL is blocked in the cloud, so no gh call may be anything
 # but `gh api`. The stub git (as in the GitHub PR flow above) records the push; nothing leaves this machine.
 CLD_DIR="$T/cld"; export CLD_DIR; mkdir -p "$CLD_DIR" "$T/stubc" "$T/c7" "$T/c8"
+printf 'CLD_DIR=%q\n' "$CLD_DIR" >"$T/stubc/stub.env"
 CL0="$T/c7/git-publish.sh"; mk_lockcopy "$CL0" "$T/stubc:"   # real require_tty
 CP="$T/c8/git-publish.sh"; mk_copy "$CP" "$T/stubc:"         # require_tty stubbed
 cp "$T/stub/git" "$T/stubc/git"
 cat >"$T/stubc/gh" <<'E'
 #!/bin/bash
+. "${0%/*}/stub.env"
 D="$CLD_DIR"
 for a in "$@"; do printf '[%s] ' "$a"; done >>"$D/gh.log"; echo >>"$D/gh.log"
 printf '%s|%s\n' "${HOME:-}" "${GH_CONFIG_DIR:-}" >"$D/gh.env"
@@ -1250,9 +1273,9 @@ branch feat/widget; commit a.txt a "feat: add widget"; CS=$(sha)
 # status: the backend decides which rows exist.
 GROW merge; cres
 out=$("${CLD[@]}" status 2>&1); rc=$?
-[ "$rc" = 0 ] && [ "$out" = "$(printf 'level: merge\nstyle: conventional\ndefault branch: main\nci changes: refused\nbackend: cloud-rest')" ] && ok || bad "cloud status with a github row: rc=$rc out=$out"
+[ "$rc" = 0 ] && [ "$out" = "$(printf 'level: merge\nstyle: conventional\ndefault branch: main\nci changes: refused\naccount: active\nbackend: cloud-rest')" ] && ok || bad "cloud status with a github row: rc=$rc out=$out"
 out=$("${LOC[@]}" status 2>&1)
-[ "$out" = "$(printf 'level: off\nstyle: -\ndefault branch: -\nci changes: refused\nbackend: local')" ] && ok || bad "local status with only a github row must be off: $out"
+[ "$out" = "$(printf 'level: off\nstyle: -\ndefault branch: -\nci changes: refused\naccount: -\nbackend: local')" ] && ok || bad "local status with only a github row must be off: $out"
 printf '%s\thttps://github.com/acme/widget.git\tmerge\tmain\tconventional\t-\n' "$CKEY" >"$REG"
 git remote set-url origin https://github.com/acme/widget.git
 "${CLD[@]}" status | grep -x 'level: off' >/dev/null && ok || bad "cloud must ignore a local row (a spoofed env gets no local grant): $("${CLD[@]}" status)"
@@ -1607,6 +1630,677 @@ out=$("${CLD[@]}" disable 2>&1); rc=$?
 "${CLD[@]}" status | grep -x 'level: merge' >/dev/null && ok || bad "cloud status after disable must still read the github row"
 cd "$T/m" || exit 1
 [ -z "$(ls -A "$T/tmp")" ] && ok || bad "private temp copies left behind after merge cases: $(ls "$T/tmp")"
+# --- per-repository GitHub account (column 7 of the registry row) ---
+# Stub gh and git live in $T/stubacct and are driven by files in $AD. gh logs argv to gh.log and the GH_TOKEN
+# it was given (or <unset>) to gh.env, one line per call. git logs the argv of push and ls-remote to git.log,
+# records the environment of each call in git.env, and runs the real `git credential fill` with that very
+# environment for three hosts. Pushes and ls-remote are served from a local bare repository. No network.
+AD="$T/acct"; mkdir -p "$AD" "$T/stubacct" "$T/c9"
+export AD_DIR="$AD" AD_REAL_GIT="$REAL_GIT"
+printf 'AD_DIR=%q\nAD_REAL_GIT=%q\n' "$AD" "$REAL_GIT" >"$T/stubacct/stub.env"
+A="$T/c9/git-publish.sh"; mk_copy "$A" "$T/stubacct:"
+ATOK="ghp_""FAKEACCOUNTTOKEN0123456789"
+cat >"$T/stubacct/gh" <<'E'
+#!/bin/bash
+. "${0%/*}/stub.env"
+D="$AD_DIR"
+for a in "$@"; do printf '[%s] ' "$a"; done >>"$D/gh.log"; echo >>"$D/gh.log"
+printf '%s\n' "${GH_TOKEN:-<unset>}" >>"$D/gh.env"
+pwd -P >>"$D/gh.cwd"
+printf '%s|%s\n' "${DBUS_SESSION_BUS_ADDRESS:-<unset>}" "${XDG_RUNTIME_DIR:-<unset>}" >>"$D/gh.bus"
+# Like gh, run git in the working directory: a filter configured for a repository there would run now.
+[ -f README.md ] && "$AD_REAL_GIT" hash-object README.md >/dev/null 2>&1
+case "$1 $2" in
+  "auth token")
+    if [ "$3" = --help ]; then
+      if [ -e "$D/help.nouser" ]; then echo "Usage: gh auth token [flags]"; else echo "Usage: gh auth token [flags]  --hostname string  --user string"; fi
+      exit 0
+    fi
+    [ -e "$D/tok.fail" ] && { echo "no account" >&2; exit 1; }
+    cat "$D/tok.out" ;;
+  "api user") [ -e "$D/user.fail" ] && { echo "bad credentials" >&2; exit 1; }; cat "$D/user.out" ;;
+  "api repos/"*) [ -e "$D/perm.fail" ] && { echo "not found" >&2; exit 1; }; cat "$D/perm.out" ;;
+  "pr create") [ -e "$D/create.fail" ] && exit 1 ;;
+  "pr view") cat "$D/pr.json" ;;
+  "pr ready"|"pr merge") : ;;
+  *) exit 1 ;;
+esac
+exit 0
+E
+cat >"$T/stubacct/git" <<'E'
+#!/bin/bash
+. "${0%/*}/stub.env"
+D="$AD_DIR"
+probe() { # $1 command name
+  { echo "== $1"; env | grep -E '^(SSL_CERT_FILE|SSL_CERT_DIR|CURL_CA_BUNDLE|GH_TOKEN|GITHUB_TOKEN|GP_TOKEN|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_1[0-3]|GIT_CONFIG_VALUE_1[0-3]|SSH_ASKPASS|GIT_ASKPASS|GIT_TRACE[A-Z0-9_]*|BASH_ENV|BASH_FUNC_[^=]*|DEBUG|SSLKEYLOGFILE|DYLD_[A-Z_]*|LD_[A-Z_]*|HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|NO_PROXY|DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR)='; } >>"$D/git.env"
+  for h in github.com example.com github.com.evil.test; do
+    printf 'protocol=https\nhost=%s\n\n' "$h" | "$AD_REAL_GIT" credential fill >"$D/cred.$1.$h" 2>&1
+  done
+}
+case "$1" in
+  push)
+    echo "$*" >>"$D/git.log"
+    [ -e "$D/push.fail" ] && { echo "fatal: unable to access $*" >&2; exit 128; }
+    probe push
+    exec "$AD_REAL_GIT" push --no-follow-tags -- "$(cat "$D/bare")" "${@: -1}" ;;
+  ls-remote)
+    echo "$*" >>"$D/git.log"
+    probe ls-remote
+    if [ "$2" = --symref ]; then printf 'ref: refs/heads/main\tHEAD\n'; exit 0; fi
+    exec "$AD_REAL_GIT" ls-remote -- "$(cat "$D/bare")" "$4" ;;
+esac
+exec "$AD_REAL_GIT" "$@"
+E
+chmod +x "$T/stubacct/gh" "$T/stubacct/git"
+
+areset() { # stub state back to a healthy account; logs and probes cleared
+  rm -f "$AD"/gh.log "$AD"/gh.env "$AD"/gh.cwd "$AD"/gh.bus "$AD"/git.log "$AD"/git.env "$AD"/cred.* "$AD"/*.fail "$AD"/help.nouser
+  : >"$AD/gh.log"; : >"$AD/gh.env"; : >"$AD/gh.cwd"; : >"$AD/gh.bus"; : >"$AD/git.log"; : >"$AD/git.env"
+  printf '%s\n' "$ATOK" >"$AD/tok.out"; printf 'acctuser\n' >"$AD/user.out"; printf 'true\n' >"$AD/perm.out"
+}
+arun() { AOUT=$("$@" 2>&1 </dev/null); ARC=$?; }
+noleak() { # name, secrets...: none may appear in the script output, gh.log or git.log
+  local n=$1 s f; shift
+  for s in "$@"; do
+    [ -n "$s" ] || continue
+    if printf '%s' "$AOUT" | grep -qF -- "$s"; then bad "$n: secret in the output"; else ok; fi
+    for f in gh.log git.log; do
+      if grep -qF -- "$s" "$AD/$f"; then bad "$n: secret in $f"; else ok; fi
+    done
+  done
+}
+afail() { # name, stderr substring, cmd...: exit 2 with the message, no leak, no git network call
+  local n=$1 want=$2; shift 2
+  arun "$@"
+  if [ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF -- "$want"; then ok; else bad "$n: rc=$ARC out=$AOUT"; fi
+  noleak "$n" "$ATOK" "$(head -n 1 "$AD/tok.out")"
+  [ ! -s "$AD/git.log" ] && ok || bad "$n: git reached the network after the failure: $(cat "$AD/git.log")"
+}
+myrow() { awk -F'\t' -v k="$AKEY" '$1 == k' "$REG"; }
+rawrow() { { printf '%s' "$AKEY"; for f in "$@"; do printf '\t%s' "$f"; done; printf '\n'; } >"$REG"; }
+nbranch() { branch "$1"; commit "f-${1//\//-}.txt" x "feat: $1"; AS=$(sha); }
+gitenv_all() { # name, pattern: every recorded git call has an env line matching the pattern
+  local n=$1 p=$2 calls hits
+  calls=$(grep -c '^== ' "$AD/git.env"); hits=$(grep -c -- "$p" "$AD/git.env")
+  [ "$calls" -gt 0 ] && [ "$calls" = "$hits" ] && ok || bad "$n: $hits of $calls git calls match $p: $(cat "$AD/git.env")"
+}
+credcheck() { # name, command (push|ls-remote): the helper answers only for github.com
+  local n=$1 c=$2 h
+  grep -qxF 'username=x-access-token' "$AD/cred.$c.github.com" && grep -qxF "password=$ATOK" "$AD/cred.$c.github.com" && ok || bad "$n: github.com credential: $(sed 's/password=.*/password=<hidden>/' "$AD/cred.$c.github.com")"
+  for h in example.com github.com.evil.test; do
+    if grep -q '^password=' "$AD/cred.$c.$h" || grep -qF -- "$ATOK" "$AD/cred.$c.$h"; then bad "$n: credential leaked to $h"; else ok; fi
+  done
+}
+
+git init -q -b main "$T/a"; cd "$T/a" || exit 1
+git config user.email t@example.invalid; git config user.name t; git config commit.gpgsign false
+commit README.md hello "chore: init"
+git clone -q --bare "$T/a" "$T/a-remote.git"; printf '%s\n' "$T/a-remote.git" >"$AD/bare"
+AURL=https://github.com/o/r.git
+git remote add origin "$AURL"; git update-ref refs/remotes/origin/main HEAD
+AKEY=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
+rm -f "$REG"; areset
+
+# registry parsing: a login is honored only on a non-commit https://github.com/ row; anything else is unregistered
+stcase() { # name, expected account line, expected level line, row fields...
+  local n=$1 ea=$2 el=$3 out; shift 3
+  rawrow "$@"; out=$("$A" status 2>&1)
+  printf '%s\n' "$out" | grep -qxF "account: $ea" && printf '%s\n' "$out" | grep -qxF "level: $el" && ok || bad "status $n: $out"
+}
+L39=$(printf 'a%.0s' $(seq 1 39)); L40=${L39}a
+stcase "login in column 7" acctuser push "$AURL" push main conventional - acctuser
+stcase "login on a pr row" acctuser pr "$AURL" pr main conventional ci acctuser
+stcase "login of 39 characters" "$L39" push "$AURL" push main conventional - "$L39"
+stcase "dash in column 7" active push "$AURL" push main conventional - -
+stcase "empty column 7" active push "$AURL" push main conventional - ""
+stcase "six columns" active push "$AURL" push main conventional -
+stcase "five columns" active push "$AURL" push main conventional
+for bad_login in -lead under_score "a;b" 'a$b' "$L40" 'a/b' 'é'; do
+  stcase "invalid login [$bad_login] is unregistered" - off "$AURL" push main conventional - "$bad_login"
+done
+stcase "eighth column is unregistered" - off "$AURL" push main conventional - acctuser extra
+stcase "eighth column '-' is unregistered" - off "$AURL" push main conventional - acctuser -
+stcase "login on a commit row is unregistered" - off - commit - conventional - acctuser
+stcase "commit row without a login stays registered" active commit - commit - conventional -
+stcase "login with an ssh URL is unregistered" - off git@github.com:o/r.git push main conventional - acctuser
+stcase "login with a non-github https URL is unregistered" - off https://example.com/o/r.git push main conventional - acctuser
+stcase "login with a lookalike https host is unregistered" - off https://github.com.evil.test/o/r.git push main conventional - acctuser
+stcase "ssh row without a login stays registered" active push git@github.com:o/r.git push main conventional -
+
+# cloud rows never carry an account: a login makes the row unregistered, `-` or empty stays registered
+cd "$T/cl" || exit 1
+cloudst() { # name, expected account line, expected level line, column 7 value
+  local n=$1 ea=$2 el=$3 out
+  printf 'github:acme/widget\t-\tmerge\tmain\tconventional\t-\t%s\n' "$4" >"$REG"; out=$("${CLD[@]}" status 2>&1)
+  printf '%s\n' "$out" | grep -qxF "account: $ea" && printf '%s\n' "$out" | grep -qxF "level: $el" && ok || bad "cloud status $n: $out"
+}
+cloudst "login on a cloud row" - off acctuser
+cloudst "dash on a cloud row" active merge -
+cloudst "empty column on a cloud row" active merge ""
+cd "$T/a" || exit 1
+
+# an old reader (six variables) puts "ci-column<TAB>login" into its last variable, so its c validation fails:
+# the row is unregistered for it (fail closed) instead of silently dropping the account
+grep -qF 'case "$c" in ""|-|ci) ;; *) return 1 ;; esac' "$SRC" && ok || bad "the c validation line the old-reader simulation mirrors is gone"
+old_reader() { # row: 0 when the old six-variable reader would accept the row's column 6
+  local k u l d s c
+  IFS=$'\t' read -r k u l d s c <<<"$1"
+  case "$c" in ""|-|ci) return 0 ;; *) return 1 ;; esac
+}
+old_reader "$(printf 'k\t%s\tpush\tmain\tconventional\t-' "$AURL")" && ok || bad "old reader must still accept a six-column row"
+old_reader "$(printf 'k\t%s\tpush\tmain\tconventional\tci\tacctuser' "$AURL")" && bad "old reader accepted a seven-column row (ci) with a login" || ok
+old_reader "$(printf 'k\t%s\tpush\tmain\tconventional\t-\tacctuser' "$AURL")" && bad "old reader accepted a seven-column row (-) with a login" || ok
+
+# enable --account: gh call order, token only through env, 7 columns written, confirmation line
+areset
+out=$(printf 'r\n' | GH_TOKEN=other "$A" enable push --account acctuser 2>&1); rc=$?; AOUT=$out
+[ "$rc" = 0 ] && printf '%s' "$out" | grep -qxF 'Account    : acctuser' && ok || bad "enable --account: rc=$rc out=$out"
+[ "$(myrow | awk -F'\t' '{print NF " " $7 " " $3 " " $2}')" = "7 acctuser push $AURL" ] && ok || bad "registry row with the account: $(cat "$REG")"
+[ "$(file_mode "$REG")" = 600 ] && ok || bad "registry mode after enable --account"
+"$A" status | grep -qxF 'account: acctuser' && ok || bad "status after enable --account"
+want="[auth] [token] [--help]
+[auth] [token] [--hostname] [github.com] [--user] [acctuser]
+[api] [user] [--jq] [.login]
+[api] [repos/o/r] [--jq] [.permissions.push]"
+[ "$(sed 's/ $//' "$AD/gh.log")" = "$want" ] && ok || bad "enable gh calls (exact argv, in order): $(cat "$AD/gh.log")"
+[ "$(sed -n 1,2p "$AD/gh.env")" = "$(printf '<unset>\n<unset>')" ] && ok || bad "the first two gh calls must have no GH_TOKEN (caller had one): $(cat "$AD/gh.env")"
+[ "$(tail -n +3 "$AD/gh.env" | sort -u)" = "$ATOK" ] && [ "$(wc -l <"$AD/gh.env" | tr -d ' ')" = 4 ] && ok || bad "later gh calls must carry the token in GH_TOKEN"
+noleak "enable --account" "$ATOK"
+grep -qx 'ls-remote --symref -- https://github.com/o/r.git HEAD' "$AD/git.log" && ok || bad "enable should ask the remote for HEAD: $(cat "$AD/git.log")"
+gitenv_all "enable git env GP_TOKEN" "^GP_TOKEN=$ATOK\$"
+credcheck "enable" ls-remote
+# a level pr row is accepted too, and re-enabling without the flag writes six columns and clears the account
+areset
+out=$(printf 'r\n' | "$A" enable pr --account AcctUser 2>&1)
+[ "$(myrow | awk -F'\t' '{print NF " " $3 " " $7}')" = "7 pr AcctUser" ] && ok || bad "enable pr --account: $out $(cat "$REG")"
+areset
+out=$(printf 'r\n' | "$A" enable push 2>&1); rc=$?
+[ "$rc" = 0 ] && ! printf '%s' "$out" | grep -qF 'Account' && ok || bad "enable without the flag must not print an Account line: rc=$rc out=$out"
+[ "$(myrow | awk -F'\t' '{print NF}')" = 6 ] && "$A" status | grep -qxF 'account: active' && ok || bad "re-enable without --account: $(cat "$REG")"
+[ ! -s "$AD/gh.log" ] && ! grep -q 'GP_TOKEN' "$AD/git.env" && ok || bad "enable without an account made gh or token calls: $(cat "$AD/gh.log")"
+
+# enable refusals leave the registry untouched; the SSH refusal comes before any gh call
+areset; cp "$REG" "$AD/reg.before"
+refused "enable --account with a bad login" "--account must be a GitHub login" "$A" enable push --account 'bad_login'
+refused "enable --account with an empty value" "needs a value" "$A" enable push --account ''
+refused "enable --account with an option-like value" "--account must be a GitHub login" "$A" enable push --account '--style'
+refused "enable --account at level commit" "--account does not apply to level commit" "$A" enable commit --account acctuser
+refused "enable duplicate --account" "duplicate --account" "$A" enable push --account acctuser --account other
+refused "enable --account missing value" "needs a value" "$A" enable push --account
+git remote set-url origin git@github.com:o/r.git
+refused "enable --account with an ssh URL" "account requires an https://github.com/ push URL" "$A" enable push --account acctuser
+[ ! -s "$AD/gh.log" ] && [ ! -s "$AD/git.log" ] && ok || bad "gh or git was called before the ssh refusal: $(cat "$AD/gh.log" "$AD/git.log")"
+git remote set-url origin https://example.com/o/r.git
+refused "enable --account with a non-github https URL" "account requires an https://github.com/ push URL" "$A" enable push --account acctuser
+[ ! -s "$AD/gh.log" ] && ok || bad "gh was called before the non-github refusal: $(cat "$AD/gh.log")"
+git remote set-url origin "$AURL"
+touch "$AD/perm.fail"
+arun "$A" enable push --account acctuser
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'cannot read the permissions of o/r (account acctuser)' && ok || bad "permissions read failure: rc=$ARC out=$AOUT"
+noleak "permissions read failure" "$ATOK"
+areset; printf 'false\n' >"$AD/perm.out"
+arun "$A" enable push --account acctuser
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'account acctuser has no push access to o/r' && ok || bad "no push access: rc=$ARC out=$AOUT"
+noleak "no push access" "$ATOK"
+[ ! -s "$AD/git.log" ] && ok || bad "git reached the network after a refused permission check: $(cat "$AD/git.log")"
+areset; printf 'true\nextra\n' >"$AD/perm.out"
+arun "$A" enable push --account acctuser
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'has no push access' && ok || bad "permission output other than exactly true must refuse: rc=$ARC out=$AOUT"
+cmp -s "$REG" "$AD/reg.before" && ok || bad "a refused enable changed the registry: $(cat "$REG")"
+# the same auth failures refuse enable
+areset; touch "$AD/tok.fail"; afail "enable, account not logged in" "account acctuser is not logged in to github.com; run gh auth login" "$A" enable push --account acctuser
+areset; touch "$AD/help.nouser"; afail "enable, old gh" "gh >= 2.40 needed for per-repo account" "$A" enable push --account acctuser
+cmp -s "$REG" "$AD/reg.before" && ok || bad "an enable that failed on auth changed the registry"
+
+# token resolution failures on push: exit 2, exact message, no leak, no git network call, and gh stops at the failing step
+rawrow "$AURL" push main conventional - acctuser
+nbranch feat/auth; AUTHS=$AS
+areset; touch "$AD/help.nouser"
+afail "push, gh too old" "gh >= 2.40 needed for per-repo account" "$A" push --expect-sha "$AUTHS"
+[ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 1 ] && ok || bad "old gh: only the --help probe may run: $(cat "$AD/gh.log")"
+areset; touch "$AD/tok.fail"
+afail "push, not logged in" "account acctuser is not logged in to github.com; run gh auth login" "$A" push --expect-sha "$AUTHS"
+[ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 2 ] && ok || bad "not logged in: stops after the token call: $(cat "$AD/gh.log")"
+areset; : >"$AD/tok.out"
+afail "push, empty token" "account acctuser is not logged in to github.com" "$A" push --expect-sha "$AUTHS"
+areset; printf 'not a token!\n' >"$AD/tok.out"
+afail "push, garbage token" "gh returned an unusable token for acctuser" "$A" push --expect-sha "$AUTHS"
+[ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 2 ] && ok || bad "garbage token must not be sent to gh api: $(cat "$AD/gh.log")"
+areset; { printf 'ghp_'; head -c 300 /dev/zero | tr '\0' a; printf '\n'; } >"$AD/tok.out"
+afail "push, over-long token" "gh returned an unusable token for acctuser" "$A" push --expect-sha "$AUTHS"
+areset; printf 'ghp_FIRSTLINE0123\nghp_SECONDLINE456\n' >"$AD/tok.out"
+afail "push, token with a newline" "gh returned an unusable token for acctuser" "$A" push --expect-sha "$AUTHS"
+noleak "token with a newline" "ghp_SECONDLINE456"
+areset; touch "$AD/user.fail"
+afail "push, token rejected" "token for acctuser was rejected; re-login acctuser" "$A" push --expect-sha "$AUTHS"
+areset; : >"$AD/user.out"
+afail "push, empty login from api user" "token for acctuser was rejected" "$A" push --expect-sha "$AUTHS"
+areset; printf 'someoneelse\n' >"$AD/user.out"
+afail "push, token of another account" "gh token belongs to another account than acctuser" "$A" push --expect-sha "$AUTHS"
+[ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 3 ] && ok || bad "mismatch: gh stops after api user: $(cat "$AD/gh.log")"
+rawrow "$AURL" pr main conventional - acctuser
+areset; printf 'someoneelse\n' >"$AD/user.out"
+afail "pr, token of another account" "gh token belongs to another account than acctuser" "$A" pr --expect-sha "$AUTHS" --expect-content "$ZERO" "${PRFILES[@]}"
+rawrow "$AURL" merge main conventional - acctuser
+areset; touch "$AD/tok.fail"
+afail "ci, not logged in" "is not logged in to github.com" "$A" ci --pr 7
+areset; touch "$AD/tok.fail"
+afail "merge, not logged in" "is not logged in to github.com" "$A" merge --pr 7 --expect-sha "$AUTHS"
+rawrow "$AURL" push main conventional - acctuser
+
+# push in account mode: succeeds into the bare repo; token via env only; case-insensitive login match
+areset; printf 'ACCTuser\n' >"$AD/user.out"
+arun env GH_TOKEN=other GITHUB_TOKEN=other2 GH_ENTERPRISE_TOKEN=other3 SSL_CERT_FILE=/nonexistent/ca.pem SSL_CERT_DIR=/nonexistent CURL_CA_BUNDLE=/nonexistent/ca.pem "$A" push --expect-sha "$AUTHS"
+[ "$ARC" = 0 ] && ok || bad "account push: rc=$ARC out=$AOUT"
+[ "$(git -C "$T/a-remote.git" rev-parse refs/heads/feat/auth)" = "$AUTHS" ] && ok || bad "account push did not reach the bare remote"
+want="[auth] [token] [--help]
+[auth] [token] [--hostname] [github.com] [--user] [acctuser]
+[api] [user] [--jq] [.login]"
+[ "$(sed 's/ $//' "$AD/gh.log")" = "$want" ] && ok || bad "push gh calls: $(cat "$AD/gh.log")"
+[ "$(sed -n 1,2p "$AD/gh.env")" = "$(printf '<unset>\n<unset>')" ] && ok || bad "first two gh calls must have no GH_TOKEN: $(cat "$AD/gh.env")"
+[ "$(tail -n +3 "$AD/gh.env")" = "$ATOK" ] && ok || bad "api user must carry the resolved token, not the caller's"
+grep -qxF "push --no-follow-tags --recurse-submodules=no -- $AURL $AUTHS:refs/heads/feat/auth" "$AD/git.log" && ok || bad "push argv is not the unchanged one: $(cat "$AD/git.log")"
+grep -qE '(^| )-c( |$)' "$AD/git.log" && bad "git -c was used: $(cat "$AD/git.log")" || ok
+grep -qE '^ls-remote -- ' "$AD/git.log" && ok || bad "ls-remote argv changed: $(cat "$AD/git.log")"
+[ "$(grep -c '^== ' "$AD/git.env")" -ge 2 ] && ok || bad "expected at least one ls-remote and one push: $(cat "$AD/git.env")"
+gitenv_all "git GP_TOKEN" "^GP_TOKEN=$ATOK\$"
+gitenv_all "git config count" '^GIT_CONFIG_COUNT=14$'
+gitenv_all "forced empty core.askPass key 10" '^GIT_CONFIG_KEY_10=core.askPass$'
+gitenv_all "forced empty core.askPass value 10" '^GIT_CONFIG_VALUE_10=$'
+gitenv_all "unscoped helper reset key 11" '^GIT_CONFIG_KEY_11=credential.helper$'
+gitenv_all "unscoped helper reset value 11" '^GIT_CONFIG_VALUE_11=$'
+gitenv_all "git helper key 12" '^GIT_CONFIG_KEY_12=credential.https://github.com.helper$'
+gitenv_all "git helper key 13" '^GIT_CONFIG_KEY_13=credential.https://github.com.helper$'
+gitenv_all "git helper reset value 12" '^GIT_CONFIG_VALUE_12=$'
+gitenv_all "git helper value 13" '^GIT_CONFIG_VALUE_13=!f(){'
+if grep -qE '^(GH_TOKEN|GITHUB_TOKEN|SSL_CERT_FILE|SSL_CERT_DIR|CURL_CA_BUNDLE)=' "$AD/git.env"; then bad "caller token or CA variables reached git: $(grep -E '^(GH_TOKEN|GITHUB_TOKEN|SSL_CERT_FILE|SSL_CERT_DIR|CURL_CA_BUNDLE)=' "$AD/git.env")"; else ok; fi
+grep -qF -- 'other' "$AD/gh.env" && bad "the caller's GH_TOKEN reached gh in account mode" || ok
+credcheck "push" push
+credcheck "ls-remote" ls-remote
+noleak "account push" "$ATOK"
+
+# push failure in account mode names the account, never the token
+nbranch feat/pushfail; areset; touch "$AD/push.fail"
+arun "$A" push --expect-sha "$AS"
+[ "$ARC" != 0 ] && printf '%s' "$AOUT" | grep -qF 'git-publish: push failed (account acctuser)' && ok || bad "push failure message: rc=$ARC out=$AOUT"
+noleak "account push failure" "$ATOK"
+rawrow "$AURL" push main conventional -; areset; touch "$AD/push.fail"
+arun "$A" push --expect-sha "$AS"
+[ "$ARC" != 0 ] && ! printf '%s' "$AOUT" | grep -qF '(account' && ok || bad "push failure without an account must not mention one: rc=$ARC out=$AOUT"
+
+# pr in account mode: token reaches pr create; failure message carries the account
+rawrow "$AURL" pr main conventional - acctuser
+nbranch feat/pr1; areset
+out=$("$A" plan "${PRFILES[@]}" 2>&1) || bad "plan in account mode: $out"
+ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
+[ ! -s "$AD/gh.log" ] && [ ! -s "$AD/git.log" ] && ok || bad "plan must stay offline: $(cat "$AD/gh.log" "$AD/git.log")"
+arun "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+[ "$ARC" = 0 ] && ok || bad "account pr: rc=$ARC out=$AOUT"
+[ "$(sed -n 2p "$AD/gh.log")" = "[auth] [token] [--hostname] [github.com] [--user] [acctuser] " ] && ok || bad "pr gh call 2: $(cat "$AD/gh.log")"
+sed -n 4p "$AD/gh.log" | grep -qF '[pr] [create] [--draft] [--repo] [o/r] [--base] [main] [--head] [feat/pr1] [--title] [feat: add widget] [--body-file] [' && ok || bad "pr create argv: $(cat "$AD/gh.log")"
+[ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 4 ] && [ "$(sed -n 1,2p "$AD/gh.env" | sort -u)" = '<unset>' ] && [ "$(sed -n 3,4p "$AD/gh.env" | sort -u)" = "$ATOK" ] && ok || bad "pr gh env: $(cat "$AD/gh.env")"
+noleak "account pr" "$ATOK"
+nbranch feat/pr2; areset; touch "$AD/create.fail"
+out=$("$A" plan "${PRFILES[@]}" 2>&1); ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
+arun "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'gh could not create the pull request (account acctuser)' && ok || bad "account pr failure message: rc=$ARC out=$AOUT"
+noleak "account pr failure" "$ATOK"
+
+# ci in account mode: the token reaches gh pr view
+rawrow "$AURL" merge main conventional - acctuser
+areset
+jq -n --arg u "https://github.com/o/r/pull/7" '{isDraft:false,url:$u,statusCheckRollup:[],headRefOid:"0123456789abcdef0123456789abcdef01234567"}' >"$AD/pr.json"
+arun "$A" ci --pr 7
+[ "$ARC" = 0 ] && ok || bad "account ci: rc=$ARC out=$AOUT"
+sed -n 4p "$AD/gh.log" | grep -qF '[pr] [view] [7] [--repo] [o/r]' && [ "$(sed -n 4p "$AD/gh.env")" = "$ATOK" ] && ok || bad "ci pr view call: $(cat "$AD/gh.log") / $(cat "$AD/gh.env")"
+noleak "account ci" "$ATOK"
+
+# without an account (six and five columns): no extra gh call, no token, caller GH_TOKEN passes through, git env unchanged
+for cols in 6 5; do
+  if [ "$cols" = 6 ]; then rawrow "$AURL" pr main conventional -; else rawrow "$AURL" pr main conventional; fi
+  nbranch "feat/plain$cols"; areset
+  out=$("$A" plan "${PRFILES[@]}" 2>&1); ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
+  arun env GH_TOKEN=other "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+  [ "$ARC" = 0 ] && ok || bad "pr with $cols columns: rc=$ARC out=$AOUT"
+  [ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 1 ] && sed -n 1p "$AD/gh.log" | grep -qF '[pr] [create] [--draft] [--repo] [o/r]' && ok || bad "$cols columns: extra gh calls: $(cat "$AD/gh.log")"
+  [ "$(cat "$AD/gh.env")" = other ] && ok || bad "$cols columns: caller GH_TOKEN must pass through: $(cat "$AD/gh.env")"
+  if grep -qE '^(GP_TOKEN|GIT_CONFIG_KEY_1[1-3])=' "$AD/git.env"; then bad "$cols columns: account credential config was set: $(cat "$AD/git.env")"; else ok; fi
+  gitenv_all "$cols columns: config count" '^GIT_CONFIG_COUNT=11$'
+  gitenv_all "$cols columns: forced empty core.askPass" '^GIT_CONFIG_KEY_10=core.askPass$'
+  grep -qE '^== push' "$AD/git.env" && ok || bad "$cols columns: no push recorded"
+  [ "$(git -C "$T/a-remote.git" rev-parse "refs/heads/feat/plain$cols")" = "$AS" ] && ok || bad "$cols columns: push did not reach the remote"
+done
+rawrow "$AURL" push main conventional -
+nbranch feat/plain3; areset
+arun "$A" push --expect-sha "$AS"
+[ "$ARC" = 0 ] && [ ! -s "$AD/gh.log" ] && ok || bad "push without an account must make no gh call: rc=$ARC gh=$(cat "$AD/gh.log")"
+
+# merge and merge --mark-ready-only in account mode: the token reaches pr view, pr ready and pr merge
+rawrow "$AURL" merge main conventional - acctuser
+nbranch feat/amerge
+amergej() { # isDraft
+  jq -n --arg s "$AS" --arg b "$(cat "$T/mbody")" --argjson d "$1" '{state:"OPEN",isDraft:$d,isCrossRepository:false,headRefName:"feat/amerge",headRefOid:$s,baseRefName:"main",title:"feat: add widget",body:$b,statusCheckRollup:[{__typename:"CheckRun",name:"ci",status:"COMPLETED",conclusion:"SUCCESS"}]}' >"$AD/pr.json"
+}
+AUTH3="[auth] [token] [--help]
+[auth] [token] [--hostname] [github.com] [--user] [acctuser]
+[api] [user] [--jq] [.login]"
+AVIEW="[pr] [view] [7] [--repo] [o/r] [--json] [state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefName,title,body,statusCheckRollup]"
+areset; amergej true
+arun "$A" merge --mark-ready-only --pr 7 --expect-sha "$AS"
+[ "$ARC" = 0 ] && printf '%s\n' "$AOUT" | grep -qxF "marked ready: 7 $AS" && ok || bad "account merge --mark-ready-only: rc=$ARC out=$AOUT"
+[ "$(sed 's/ $//' "$AD/gh.log")" = "$(printf '%s\n%s\n%s' "$AUTH3" "$AVIEW" "[pr] [ready] [7] [--repo] [o/r]")" ] && ok || bad "mark-ready gh calls: $(cat "$AD/gh.log")"
+[ "$(sed -n 1,2p "$AD/gh.env" | sort -u)" = '<unset>' ] && [ "$(sed -n 3,5p "$AD/gh.env" | sort -u)" = "$ATOK" ] && [ "$(wc -l <"$AD/gh.env" | tr -d ' ')" = 5 ] && ok || bad "mark-ready gh env (pr ready must carry the token)"
+noleak "account merge --mark-ready-only" "$ATOK"
+areset; amergej false
+arun "$A" merge --pr 7 --expect-sha "$AS"
+[ "$ARC" = 0 ] && printf '%s\n' "$AOUT" | grep -qxF "7 $AS" && ok || bad "account merge: rc=$ARC out=$AOUT"
+[ "$(sed 's/ $//' "$AD/gh.log")" = "$(printf '%s\n%s\n%s' "$AUTH3" "$AVIEW" "[pr] [merge] [7] [--repo] [o/r] [--squash] [--match-head-commit] [$AS] [--subject] [feat: add widget] [--body] []")" ] && ok || bad "merge gh calls: $(cat "$AD/gh.log")"
+[ "$(sed -n 1,2p "$AD/gh.env" | sort -u)" = '<unset>' ] && [ "$(sed -n 3,5p "$AD/gh.env" | sort -u)" = "$ATOK" ] && [ "$(wc -l <"$AD/gh.env" | tr -d ' ')" = 5 ] && ok || bad "merge gh env (pr merge must carry the token)"
+noleak "account merge" "$ATOK"
+
+# enable refused on a token of another account or a rejected token leaves the registry byte-identical
+cp "$REG" "$AD/reg.before"
+areset; printf 'someoneelse\n' >"$AD/user.out"
+afail "enable, token of another account" "gh token belongs to another account than acctuser" "$A" enable push --account acctuser
+cmp -s "$REG" "$AD/reg.before" && ok || bad "enable with another account's token changed the registry"
+areset; touch "$AD/user.fail"
+afail "enable, token rejected" "token for acctuser was rejected; re-login acctuser" "$A" enable push --account acctuser
+cmp -s "$REG" "$AD/reg.before" && ok || bad "enable with a rejected token changed the registry"
+
+# a raw row whose line ends in a tab after column 7 (an empty eighth column) is unregistered
+printf '%s\t%s\tpush\tmain\tconventional\t-\tacctuser\t\n' "$AKEY" "$AURL" >"$REG"
+out=$("$A" status 2>&1); printf '%s\n' "$out" | grep -qxF 'level: off' && ok || bad "trailing tab after column 7: $out"
+printf '%s\t%s\tpush\tmain\tconventional\t-\t\n' "$AKEY" "$AURL" >"$REG"
+out=$("$A" status 2>&1); printf '%s\n' "$out" | grep -qxF 'level: push' && ok || bad "a six-column row with a trailing tab stays registered: $out"
+
+# caller git config with its own helpers: for github.com only the account token answers
+printf '[credential]\n\thelper = "!f() { echo username=u; echo password=WRONG; }; f"\n[credential "https://github.com"]\n\thelper =\n\thelper = "!f() { echo username=ghuser; echo password=WRONG_GH; }; f"\n' >"$AD/global.cfg"
+rawrow "$AURL" push main conventional - acctuser
+nbranch feat/aglobal; areset
+arun env GIT_CONFIG_GLOBAL="$AD/global.cfg" "$A" push --expect-sha "$AS"
+[ "$ARC" = 0 ] && ok || bad "account push with caller helpers: rc=$ARC out=$AOUT"
+[ "$(grep '^password=' "$AD/cred.push.github.com")" = "password=$ATOK" ] && ! grep -q 'WRONG' "$AD/cred.push.github.com" && ok || bad "github.com credential with caller helpers: $(sed 's/password=ghp_.*/password=<token>/' "$AD/cred.push.github.com")"
+grep -q 'password=' "$AD/cred.push.example.com" && bad "account mode: a caller helper answered for another host: $(cat "$AD/cred.push.example.com")" || ok
+# control: without an account the caller's generic helper does answer for other hosts, so the config was in effect
+rawrow "$AURL" push main conventional -
+nbranch feat/aglobal-plain; areset
+arun env GIT_CONFIG_GLOBAL="$AD/global.cfg" "$A" push --expect-sha "$AS"
+[ "$ARC" = 0 ] && grep -qx 'password=WRONG' "$AD/cred.push.example.com" && ok || bad "control: the caller config was not in effect for other hosts: rc=$ARC $(cat "$AD/cred.push.example.com")"
+# the unscoped reset: a global credential.helper never runs where GP_TOKEN is set, for any host
+printf '#!/bin/sh\n: >"%s/sentinel.helper"\n' "$AD" >"$AD/helper.sh"; chmod +x "$AD/helper.sh"
+printf '[credential]\n\thelper = %s\n' "$AD/helper.sh" >"$AD/helper.cfg"
+rawrow "$AURL" push main conventional - acctuser
+nbranch feat/ahelper; areset; rm -f "$AD"/sentinel.*
+arun env GIT_CONFIG_GLOBAL="$AD/helper.cfg" "$A" push --expect-sha "$AS"
+[ "$ARC" = 0 ] && ok || bad "account push with a global helper: rc=$ARC out=$AOUT"
+[ ! -e "$AD/sentinel.helper" ] && ok || bad "a global credential helper ran in account mode"
+rawrow "$AURL" push main conventional -
+nbranch feat/ahelper-plain; areset; rm -f "$AD"/sentinel.*
+arun env GIT_CONFIG_GLOBAL="$AD/helper.cfg" "$A" push --expect-sha "$AS"
+[ -e "$AD/sentinel.helper" ] && ok || bad "control: the global helper did not run without an account; the helper test proves nothing"
+rm -f "$AD"/sentinel.*
+
+# --- clean environment: exported functions, BASH_ENV, askpass, tracing and debug variables never take effect ---
+printf ': >"%s/sentinel.bashenv"\n' "$AD" >"$AD/bashenv.sh"
+printf '#!/bin/sh\n: >"%s/sentinel.askpass"\necho x\n' "$AD" >"$AD/askpass.sh"; chmod +x "$AD/askpass.sh"
+nosentinel() { # name
+  if ls "$AD"/sentinel.* >/dev/null 2>&1; then bad "$1: injected code ran: $(cd "$AD" && ls sentinel.*)"; else ok; fi
+}
+hijack_run() { # how (path|bash), cmd args...: runs with exported gh, git, test and echo functions plus BASH_ENV
+  local how=$1; shift
+  (
+    for f in gh git test echo; do eval "$f() { : >'$AD/sentinel.fn-$f'; }"; done
+    export -f gh git test echo
+    if [ "$how" = path ]; then BASH_ENV="$AD/bashenv.sh" "$@"; else bash "$@"; fi
+  ) </dev/null >"$AD/hijack.out" 2>&1
+}
+for kind in acct plain; do
+  if [ "$kind" = acct ]; then rawrow "$AURL" push main conventional - acctuser; else rawrow "$AURL" push main conventional -; fi
+  for how in path bash; do
+    nbranch "feat/fn-$kind-$how"; areset; rm -f "$AD"/sentinel.*
+    hijack_run "$how" "$A" push --expect-sha "$AS"; rc=$?
+    [ "$rc" = 0 ] && [ "$(git -C "$T/a-remote.git" rev-parse "refs/heads/feat/fn-$kind-$how")" = "$AS" ] && ok || bad "push with injected functions ($kind, $how): rc=$rc $(cat "$AD/hijack.out")"
+    nosentinel "exported functions/BASH_ENV ($kind, $how)"
+    grep -qE '^(BASH_FUNC_|BASH_ENV=)' "$AD/git.env" && bad "function text or BASH_ENV reached git ($kind, $how)" || ok
+    if [ "$kind" = acct ]; then credcheck "credential helper with injected functions ($how)" push; fi
+  done
+done
+# BASH_ENV is not run for the status command either, and a hand-set marker with a dirty environment is refused
+rm -f "$AD"/sentinel.*
+BASH_ENV="$AD/bashenv.sh" "$A" status >/dev/null 2>&1; nosentinel "BASH_ENV on status"
+refused "hand-set clean marker with an extra variable" "environment is not clean" env GIT_PUBLISH_CLEAN_ENV=1 SOME_VAR=1 "$A" status
+refused "hand-set clean marker with BASH_ENV" "environment is not clean" env GIT_PUBLISH_CLEAN_ENV=1 BASH_ENV="$AD/bashenv.sh" "$A" status
+out=$(env -i GIT_PUBLISH_CLEAN_ENV=1 "BASH_FUNC_gh%%=() { : >'$AD/sentinel.fn-marker'; }" "$A" status 2>&1 </dev/null); rc=$?
+[ "$rc" = 2 ] && printf '%s' "$out" | grep -qF 'environment is not clean' && ok || bad "hand-set clean marker with an exported function only: rc=$rc out=$out"
+out=$(env -i GIT_PUBLISH_CLEAN_ENV=1 BASH_ENV="$AD/bashenv.sh" "$A" status 2>&1 </dev/null); rc=$?
+[ "$rc" = 2 ] && printf '%s' "$out" | grep -qF 'environment is not clean' && ok || bad "hand-set clean marker with BASH_ENV only: rc=$rc out=$out"
+out=$(env -i GIT_PUBLISH_CLEAN_ENV=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$A" status 2>&1 </dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s\n' "$out" | grep -qxF 'level: push' && ok || bad "control: a marked run with only allowlisted variables must work: rc=$rc out=$out"
+nosentinel "hand-set marker cases"
+
+# askpass: an agent-set SSH_ASKPASS/GIT_ASKPASS never runs (empty core.askPass), and in account mode a proxy URL
+# with a user name is dropped. The stub git's credential fill for example.com has no helper, so git would ask.
+rm -f "$AD"/sentinel.*
+printf 'protocol=https\nhost=example.com\n\n' | SSH_ASKPASS="$AD/askpass.sh" git credential fill >/dev/null 2>&1
+[ -e "$AD/sentinel.askpass" ] && ok || bad "control: git did not run SSH_ASKPASS with terminal prompts disabled; the askpass test proves nothing"
+for kind in acct plain; do
+  if [ "$kind" = acct ]; then rawrow "$AURL" push main conventional - acctuser; else rawrow "$AURL" push main conventional -; fi
+  nbranch "feat/askpass-$kind"; areset; rm -f "$AD"/sentinel.*
+  arun env SSH_ASKPASS="$AD/askpass.sh" GIT_ASKPASS="$AD/askpass.sh" DISPLAY=:0 HTTPS_PROXY=http://user@127.0.0.1:9 https_proxy=http://user@127.0.0.1:9 NO_PROXY='*' "$A" push --expect-sha "$AS"
+  [ "$ARC" = 0 ] && ok || bad "push with askpass variables ($kind): rc=$ARC out=$AOUT"
+  nosentinel "askpass ($kind)"
+  grep -qE '^(SSH_ASKPASS|GIT_ASKPASS)=' "$AD/git.env" && bad "askpass variables reached git ($kind)" || ok
+  if [ "$kind" = acct ]; then
+    grep -qE '^(HTTPS_PROXY|https_proxy)=' "$AD/git.env" && bad "a proxy URL with a user name reached git in account mode" || ok
+    grep -qx 'NO_PROXY=\*' "$AD/git.env" && ok || bad "NO_PROXY should still pass through"
+  else
+    grep -qx 'HTTPS_PROXY=http://user@127.0.0.1:9' "$AD/git.env" && ok || bad "proxy variables must still pass through without an account"
+  fi
+done
+
+# tracing and debug variables are dropped: no trace file, nothing in git's environment
+rawrow "$AURL" push main conventional - acctuser
+nbranch feat/trace; areset
+arun env GIT_TRACE2_ENV_VARS=GP_TOKEN GIT_TRACE2_EVENT="$AD/trace.event" GIT_TRACE2_PERF="$AD/trace.perf" GIT_TRACE2="$AD/trace.2" \
+  GIT_TRACE="$AD/trace.t" GIT_TRACE_CURL="$AD/trace.curl" GIT_CURL_VERBOSE=1 GIT_REDACT_COOKIES=x GH_DEBUG=api DEBUG=1 \
+  SSLKEYLOGFILE="$AD/trace.keys" "$A" push --expect-sha "$AS"
+[ "$ARC" = 0 ] && ok || bad "push with trace variables: rc=$ARC out=$AOUT"
+if ls "$AD"/trace.* >/dev/null 2>&1; then bad "a trace file was written: $(cd "$AD" && ls trace.*)"; else ok; fi
+grep -qE '^(GIT_TRACE[A-Z0-9_]*|DEBUG|SSLKEYLOGFILE)=' "$AD/git.env" && bad "trace or debug variables reached git: $(grep -E '^(GIT_TRACE|DEBUG|SSLKEY)' "$AD/git.env")" || ok
+noleak "trace variables" "$ATOK"
+
+# the local backend drops caller CA overrides even without an account
+rawrow "$AURL" push main conventional -
+nbranch feat/plainca; areset
+arun env SSL_CERT_FILE=/nonexistent/ca.pem SSL_CERT_DIR=/nonexistent CURL_CA_BUNDLE=/nonexistent/ca.pem "$A" push --expect-sha "$AS"
+[ "$ARC" = 0 ] && ! grep -qE '^(SSL_CERT_FILE|SSL_CERT_DIR|CURL_CA_BUNDLE)=' "$AD/git.env" && ok || bad "CA variables must be dropped on the local backend: rc=$ARC $(grep -E '^(SSL|CURL)' "$AD/git.env")"
+
+# repo-local filter.* and submodule.*.update are refused only with an account, before any gh or git network call;
+# other submodule keys stay allowed, and rows without an account accept all of them as before. filter.lfs: always LFS.
+nbranch feat/cfgcheck
+cfgcase() { # want (ok|refused), kind (acct|plain), key, value
+  local want=$1 kind=$2 k=$3 v=$4 out rc
+  if [ "$kind" = acct ]; then rawrow "$AURL" push main conventional - acctuser; else rawrow "$AURL" push main conventional -; fi
+  git config "$k" "$v"; areset
+  if [ "$want" = refused ]; then
+    out=$("$A" push --expect-sha "$AS" 2>&1 </dev/null); rc=$?
+  else
+    out=$("$A" plan 2>&1 </dev/null); rc=$?
+  fi
+  git config --unset "$k"
+  if [ "$want" = ok ]; then
+    [ "$rc" = 0 ] && ok || bad "$k must be accepted ($kind): rc=$rc out=$out"
+  else
+    [ "$rc" = 2 ] && printf '%s' "$out" | grep -qF "repository config section '${k%%.*}' has a setting that is not allowed with a per-repository account" && ok || bad "$k must be refused ($kind): rc=$rc out=$out"
+    [ ! -s "$AD/gh.log" ] && [ ! -s "$AD/git.log" ] && ok || bad "$k: gh or git network call before the refusal: $(cat "$AD/gh.log" "$AD/git.log")"
+  fi
+}
+for kv in filter.x.clean=cat filter.x.smudge=cat filter.x.process=cat filter.x.required=true 'submodule.sub.update=!true'; do
+  cfgcase refused acct "${kv%%=*}" "${kv#*=}"
+  cfgcase ok plain "${kv%%=*}" "${kv#*=}"
+done
+for kv in submodule.sub.url=https://example.invalid/s.git submodule.sub.active=true submodule.sub.branch=main submodule.recurse=true; do
+  cfgcase ok acct "${kv%%=*}" "${kv#*=}"
+  cfgcase ok plain "${kv%%=*}" "${kv#*=}"
+done
+for kind in acct plain; do
+  if [ "$kind" = acct ]; then rawrow "$AURL" push main conventional - acctuser; else rawrow "$AURL" push main conventional -; fi
+  git config filter.lfs.clean "git-lfs clean -- %f"
+  refused "filter.lfs keeps its LFS message ($kind)" "Git LFS repositories are not supported on this route" "$A" plan
+  git config --unset filter.lfs.clean
+done
+
+# the Linux keyring needs the session bus. Only the standard layout is accepted: XDG_RUNTIME_DIR exactly
+# <base>/<uid> (base /run/user), and DBUS_SESSION_BUS_ADDRESS exactly unix:path=<that dir>/bus[,guid=<hex>].
+# Valid values reach every gh and git call without an account, and only the two `gh auth token` calls with one.
+# /run/user does not exist on macOS, so a copy with the base moved into $AD (the only patched line) covers acceptance.
+A2="$T/c10/git-publish.sh"; mkdir -p "$T/c10"; mk_copy "$A2.tmp" "$T/stubacct:"
+sed -e "s|^XDG_RUNTIME_BASE=/run/user\$|XDG_RUNTIME_BASE=\"$AD/runbase\"|" "$A2.tmp" >"$A2" && rm -f "$A2.tmp" && chmod +x "$A2"
+[ "$(grep -c "^XDG_RUNTIME_BASE=\"$AD/runbase\"\$" "$A2")" = 1 ] || patch_fatal "XDG_RUNTIME_BASE line was not rewritten"
+XDGOK="$AD/runbase/$(id -u)"; XDGWW="$AD/xdg-ww"; mkdir -p "$XDGOK" "$XDGWW"; chmod 700 "$XDGOK"; chmod 777 "$XDGWW"
+BUSOK="unix:path=$XDGOK/bus"
+for kind in plain acct; do
+  if [ "$kind" = acct ]; then rawrow "$AURL" pr main conventional - acctuser; else rawrow "$AURL" pr main conventional -; fi
+  nbranch "feat/dbus-$kind"
+  out=$("$A2" plan "${PRFILES[@]}" 2>&1); ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p'); areset
+  arun env DBUS_SESSION_BUS_ADDRESS="$BUSOK" XDG_RUNTIME_DIR="$XDGOK" "$A2" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+  [ "$ARC" = 0 ] && ok || bad "pr with session bus variables ($kind): rc=$ARC out=$AOUT"
+  if [ "$kind" = plain ]; then
+    gitenv_all "DBUS_SESSION_BUS_ADDRESS forwarded to git (plain)" "^DBUS_SESSION_BUS_ADDRESS=$BUSOK\$"
+    gitenv_all "XDG_RUNTIME_DIR forwarded to git (plain)" "^XDG_RUNTIME_DIR=$XDGOK\$"
+    [ "$(sort -u "$AD/gh.bus")" = "$BUSOK|$XDGOK" ] && ok || bad "gh without an account must see the session bus: $(cat "$AD/gh.bus")"
+  else
+    grep -qE '^(DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR)=' "$AD/git.env" && bad "session bus variables reached git in account mode" || ok
+    [ "$(sed -n 1,2p "$AD/gh.bus" | sort -u)" = "$BUSOK|$XDGOK" ] && ok || bad "the gh auth token calls must keep the session bus: $(cat "$AD/gh.bus")"
+    [ "$(tail -n +3 "$AD/gh.bus" | sort -u)" = '<unset>|<unset>' ] && [ "$(wc -l <"$AD/gh.bus" | tr -d ' ')" = 4 ] && ok || bad "gh_run must not see the session bus in account mode: $(cat "$AD/gh.bus")"
+  fi
+done
+# anything else is dropped (not refused), without an account too
+rawrow "$AURL" push main conventional -
+buscase() { # name, bus (kept|dropped), runtime dir (kept|dropped), script copy, bus value, runtime dir value
+  local n=$1 wb=$2 wx=$3 cp=$4 bus=$5 xdg=$6
+  nbranch feat/badbus; areset
+  arun env DBUS_SESSION_BUS_ADDRESS="$bus" XDG_RUNTIME_DIR="$xdg" "$cp" push --expect-sha "$AS"
+  [ "$ARC" = 0 ] && ok || bad "$n: rc=$ARC out=$AOUT"
+  if [ "$wb" = kept ]; then grep -qxF "DBUS_SESSION_BUS_ADDRESS=$bus" "$AD/git.env" && ok || bad "$n: bus address must be kept"
+  else grep -q '^DBUS_SESSION_BUS_ADDRESS=' "$AD/git.env" && bad "$n: bus address must be dropped: $(grep '^DBUS' "$AD/git.env")" || ok; fi
+  if [ "$wx" = kept ]; then grep -qxF "XDG_RUNTIME_DIR=$xdg" "$AD/git.env" && ok || bad "$n: runtime dir must be kept"
+  else grep -q '^XDG_RUNTIME_DIR=' "$AD/git.env" && bad "$n: runtime dir must be dropped: $(grep '^XDG' "$AD/git.env")" || ok; fi
+  git push -q "$T/a-remote.git" --delete feat/badbus 2>/dev/null
+}
+NL='
+'
+buscase "standard layout with a guid" kept kept "$A2" "$BUSOK,guid=0123abcdef" "$XDGOK"
+buscase "abstract address" dropped kept "$A2" "unix:abstract=$XDGOK/bus" "$XDGOK"
+buscase "non-standard socket path" dropped kept "$A2" "unix:path=$AD/other/bus" "$XDGOK"
+buscase "unixexec transport" dropped kept "$A2" "unixexec:path=/bin/sh" "$XDGOK"
+buscase "tcp transport" dropped kept "$A2" "tcp:host=localhost,port=1" "$XDGOK"
+buscase "chained address" dropped kept "$A2" "$BUSOK;unixexec:path=/bin/sh" "$XDGOK"
+buscase "uppercase guid" dropped kept "$A2" "$BUSOK,guid=ABC" "$XDGOK"
+buscase "empty guid" dropped kept "$A2" "$BUSOK,guid=" "$XDGOK"
+buscase "newline after the address" dropped kept "$A2" "$BUSOK${NL}x" "$XDGOK"
+buscase "newline inside the guid" dropped kept "$A2" "$BUSOK,guid=ab${NL}cd" "$XDGOK"
+buscase "runtime dir not <base>/<uid>" dropped dropped "$A2" "unix:path=$XDGWW/bus" "$XDGWW"
+buscase "runtime dir with a trailing slash" dropped dropped "$A2" "$BUSOK" "$XDGOK/"
+buscase "runtime dir with a newline" dropped dropped "$A2" "$BUSOK" "$XDGOK${NL}"
+buscase "relative runtime dir" dropped dropped "$A2" "$BUSOK" "relative/run"
+buscase "bus without a runtime dir" dropped dropped "$A2" "$BUSOK" ""
+chmod 770 "$XDGOK"
+buscase "group-writable runtime dir" dropped dropped "$A2" "$BUSOK" "$XDGOK"
+chmod 700 "$XDGOK"; mv "$XDGOK" "$XDGOK.real"; ln -s "$XDGOK.real" "$XDGOK"
+buscase "symlinked runtime dir" dropped dropped "$A2" "$BUSOK" "$XDGOK"
+rm -f "$XDGOK"; mv "$XDGOK.real" "$XDGOK"
+# the production base is /run/user; on a system without it (macOS) both variables are always dropped
+if [ ! -d "/run/user/$(id -u)" ]; then
+  buscase "production copy without /run/user" dropped dropped "$A" "unix:path=/run/user/$(id -u)/bus" "/run/user/$(id -u)"
+fi
+
+# a global insteadOf plus an identity pushInsteadOf would redirect the preflight ls-remote: refused before any network call
+printf '[url "https://evil.invalid/"]\n\tinsteadOf = https://github.com/\n[url "https://github.com/"]\n\tpushInsteadOf = https://github.com/\n' >"$AD/rewrite.cfg"
+rawrow "$AURL" push main conventional - acctuser
+nbranch feat/rewrite; areset
+arun env GIT_CONFIG_GLOBAL="$AD/rewrite.cfg" "$A" push --expect-sha "$AS"
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'would rewrite the push URL again' && ok || bad "insteadOf redirecting the preflight: rc=$ARC out=$AOUT"
+[ ! -s "$AD/git.log" ] && [ ! -s "$AD/gh.log" ] && ok || bad "a network call happened before the rewrite refusal: $(cat "$AD/git.log" "$AD/gh.log")"
+# the same rewrite plus a global credential helper: the helper never runs, and enable refuses before any network call
+{ cat "$AD/rewrite.cfg"; printf '[credential]\n\thelper = %s\n' "$AD/helper.sh"; } >"$AD/rewrite-helper.cfg"
+areset; rm -f "$AD"/sentinel.*
+arun env GIT_CONFIG_GLOBAL="$AD/rewrite-helper.cfg" "$A" push --expect-sha "$AS"
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'would rewrite the push URL again' && ok || bad "rewrite plus helper on push: rc=$ARC out=$AOUT"
+cp "$REG" "$AD/reg.before"; areset
+arun env GIT_CONFIG_GLOBAL="$AD/rewrite-helper.cfg" "$A" enable push --account acctuser
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF 'would rewrite the push URL again' && ok || bad "enable must refuse the rewrite: rc=$ARC out=$AOUT"
+[ ! -s "$AD/git.log" ] && [ ! -s "$AD/gh.log" ] && cmp -s "$REG" "$AD/reg.before" && ok || bad "enable reached the network or changed the registry before the rewrite refusal"
+[ ! -e "$AD/sentinel.helper" ] && ok || bad "the global credential helper ran during the rewrite cases"
+
+# a relative TMPDIR is refused: in account mode gh runs from /, so the body file path must be absolute
+rawrow "$AURL" pr main conventional - acctuser
+refused "relative TMPDIR" "TMPDIR must be an absolute path" env TMPDIR=relative-tmp "$A" plan "${PRFILES[@]}"
+[ ! -e "$T/a/relative-tmp" ] && ok || bad "a relative TMPDIR was created"
+
+# gh never runs in the repository in account mode, so a repository filter cannot see GH_TOKEN
+printf '#!/bin/sh\n: >"%s/sentinel.filter"\ncat\n' "$AD" >"$AD/filter.sh"; chmod +x "$AD/filter.sh"
+printf '[filter "sent"]\n\tclean = %s\n' "$AD/filter.sh" >"$AD/filter.cfg"
+printf '* filter=sent\n' >"$T/a/.git/info/attributes"
+rm -f "$AD"/sentinel.*
+(cd "$T/a" && GIT_CONFIG_GLOBAL="$AD/filter.cfg" "$T/stubacct/gh" control) >/dev/null 2>&1
+[ -e "$AD/sentinel.filter" ] && ok || bad "control: the stub gh did not run the filter from the repository; the filter tests prove nothing"
+rm -f "$AD"/sentinel.*
+cwd_root() { # name: every gh call ran from /
+  [ -s "$AD/gh.cwd" ] && [ "$(sort -u "$AD/gh.cwd")" = / ] && ok || bad "$1: gh ran outside /: $(sort -u "$AD/gh.cwd")"
+}
+# ci reads no repository config, so a filter configured in the repository itself reaches this point
+rawrow "$AURL" merge main conventional - acctuser; areset
+jq -n --arg u "https://github.com/o/r/pull/7" '{isDraft:false,url:$u,statusCheckRollup:[],headRefOid:"0123456789abcdef0123456789abcdef01234567"}' >"$AD/pr.json"
+git config filter.sent.clean "$AD/filter.sh"
+arun "$A" ci --pr 7
+git config --remove-section filter.sent
+[ "$ARC" = 0 ] && ok || bad "account ci with a repository filter: rc=$ARC out=$AOUT"
+nosentinel "repository filter during account ci"; cwd_root "account ci"
+# pr and merge refuse the repository filter, and a filter from the global config still never runs under gh
+rawrow "$AURL" pr main conventional - acctuser
+nbranch feat/filterpr; areset
+out=$(GIT_CONFIG_GLOBAL="$AD/filter.cfg" "$A" plan "${PRFILES[@]}" 2>&1); ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
+git config filter.sent.clean "$AD/filter.sh"
+arun "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+git config --remove-section filter.sent
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF "section 'filter'" && [ ! -s "$AD/gh.log" ] && ok || bad "account pr with a repository filter: rc=$ARC out=$AOUT"
+areset
+arun env GIT_CONFIG_GLOBAL="$AD/filter.cfg" "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+[ "$ARC" = 0 ] && ok || bad "account pr with a global filter: rc=$ARC out=$AOUT"
+nosentinel "global filter during account pr"; cwd_root "account pr"
+grep -qF "[--body-file] [$T/tmp/" "$AD/gh.log" && ok || bad "pr --body-file must be an absolute path: $(cat "$AD/gh.log")"
+rawrow "$AURL" merge main conventional - acctuser
+nbranch feat/amerge2; areset
+jq -n --arg s "$AS" --arg b "$(cat "$T/mbody")" '{state:"OPEN",isDraft:false,isCrossRepository:false,headRefName:"feat/amerge2",headRefOid:$s,baseRefName:"main",title:"feat: add widget",body:$b,statusCheckRollup:[{__typename:"CheckRun",name:"ci",status:"COMPLETED",conclusion:"SUCCESS"}]}' >"$AD/pr.json"
+git config filter.sent.clean "$AD/filter.sh"
+arun "$A" merge --pr 7 --expect-sha "$AS"
+git config --remove-section filter.sent
+[ "$ARC" = 2 ] && printf '%s' "$AOUT" | grep -qF "section 'filter'" && [ ! -s "$AD/gh.log" ] && ok || bad "account merge with a repository filter: rc=$ARC out=$AOUT"
+areset
+arun env GIT_CONFIG_GLOBAL="$AD/filter.cfg" "$A" merge --pr 7 --expect-sha "$AS"
+[ "$ARC" = 0 ] && ok || bad "account merge with a global filter: rc=$ARC out=$AOUT"
+nosentinel "global filter during account merge"; cwd_root "account merge"
+rm -f "$T/a/.git/info/attributes"
+# without an account gh still runs in the repository, as before
+rawrow "$AURL" push main conventional -; nbranch feat/plaincwd; areset
+rawrow "$AURL" pr main conventional -
+out=$("$A" plan "${PRFILES[@]}" 2>&1); ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
+arun "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
+[ "$ARC" = 0 ] && [ "$(sort -u "$AD/gh.cwd")" = "$(cd "$T/a" && pwd -P)" ] && ok || bad "gh without an account should run in the repository: rc=$ARC cwd=$(cat "$AD/gh.cwd")"
+
+# only a script read from a file re-runs itself; a cwd file named bash is never run
+mkdir -p "$AD/selfdir"
+printf '#!/bin/sh\n: >"%s/sentinel.selfbash"\n' "$AD" >"$AD/selfdir/bash"; chmod +x "$AD/selfdir/bash"
+rm -f "$AD"/sentinel.*
+out=$(cd "$AD/selfdir" && bash -s status <"$A" 2>&1); rc=$?
+[ "$rc" = 2 ] && printf '%s' "$out" | grep -qF 'run the script by its path' && ok || bad "bash < script: rc=$rc out=$out"
+out=$(cd "$AD/selfdir" && bash -c "$(cat "$A")" bash status 2>&1); rc=$?
+[ "$rc" = 2 ] && printf '%s' "$out" | grep -qF 'run the script by its path' && ok || bad "bash -c script: rc=$rc out=$out"
+nosentinel "cwd file named bash"
+out=$(cd "$T/c9" && bash git-publish.sh status 2>&1); rc=$?
+[ "$rc" = 0 ] && printf '%s\n' "$out" | grep -qx 'backend: local' && ok || bad "bash with a relative script path must still work: rc=$rc out=$out"
+[ -z "$(ls -A "$T/tmp")" ] && ok || bad "private temp copies left behind after the account cases: $(ls "$T/tmp")"
 cd / || exit 1
 
 echo "RESULT pass=$PASS fail=$FAIL"

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # Single validated route for pushing a branch, opening a draft PR and squash-merging it
 # in projects the user registered. Agents may run `status`, `plan`, `push`, `pr`, `merge` and `ci`,
 # each bounded by the registered level (commit < push < pr < merge). Only `enable` and
@@ -6,6 +6,56 @@
 # Exit code 2 = refused. Targets bash 3.2
 # (macOS) and Linux. Repo files cannot relax the local checks, but CI results come from repo-authored
 # workflows, so a green check is only as trustworthy as those files; hence the CI file policy below.
+
+# --- clean environment: runs before anything else ---
+# Bash imports exported functions (they beat PATH and builtins) and runs BASH_ENV, and the text of exported
+# functions still reaches child shells such as git's `!` credential helper. So the script re-runs itself once
+# through `env -i` with only the variables below, under `bash -p` (no function import, BASH_ENV, SHELLOPTS
+# or BASHOPTS). The marker only skips the re-run: a marked run whose environment holds any other variable is
+# refused, so setting the marker by hand gains nothing against the env check. BASH_ENV under a plain
+# `bash script` runs before this line and is a documented gap. PATH and HOME are not kept: both are set below.
+GP_ENV_KEEP='USER LOGNAME LANG LC_ALL LC_CTYPE LC_COLLATE LC_MESSAGES LC_NUMERIC LC_TIME TERM TMPDIR SSH_AUTH_SOCK
+  HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
+  CLAUDE_CODE_REMOTE GH_TOKEN GITHUB_TOKEN SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE
+  GIT_CEILING_DIRECTORIES GIT_CONFIG_NOSYSTEM GIT_CONFIG_SYSTEM GIT_CONFIG_GLOBAL
+  DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR'
+# DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR only name the session bus socket that gh and git credential
+# helpers use to reach the Linux keyring (Secret Service).
+if [ "${GIT_PUBLISH_CLEAN_ENV:-}" != 1 ]; then
+  gp_args=()
+  for gp_v in $GP_ENV_KEEP; do
+    [ -z "${!gp_v+x}" ] || gp_args+=("$gp_v=${!gp_v}")
+  done
+  # Only a script read from a file can re-run itself: `bash < script` or `bash -c "$(cat script)"` would
+  # otherwise re-run whatever file $0 happens to name.
+  if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" != "$0" ] || [ ! -f "$0" ]; then
+    printf 'git-publish: REFUSED: %s\n' "run the script by its path so it can re-run in a clean environment" >&2
+    exit 2
+  fi
+  case "$0" in */*) gp_self=$0 ;; *) gp_self=./$0 ;; esac
+  # execfail keeps the shell alive when exec fails, so the refusal below is reached.
+  shopt -s execfail
+  if [ -x /usr/bin/env ] && [ -x /bin/bash ]; then
+    exec /usr/bin/env -i GIT_PUBLISH_CLEAN_ENV=1 "${gp_args[@]}" /bin/bash -p -- "$gp_self" "$@"
+  fi
+  printf 'git-publish: REFUSED: %s\n' "cannot re-run in a clean environment" >&2
+  exit 2
+fi
+# Names as the child processes will see them; text after the first `=` is skipped, so a multi-line value can
+# only add a name (and refuse), never hide one.
+gp_keep=" $(printf '%s ' $GP_ENV_KEEP)GIT_PUBLISH_CLEAN_ENV PWD OLDPWD SHLVL _ "
+gp_bad=0
+[ -z "$(declare -F)" ] || gp_bad=1
+while IFS= read -r gp_line; do
+  case "$gp_line" in *=*) ;; *) continue ;; esac
+  case "$gp_keep" in *" ${gp_line%%=*} "*) ;; *) gp_bad=1 ;; esac
+done < <(/usr/bin/env)
+if [ "$gp_bad" != 0 ]; then
+  printf 'git-publish: REFUSED: %s\n' "environment is not clean; run the script directly, without GIT_PUBLISH_CLEAN_ENV" >&2
+  exit 2
+fi
+unset GIT_PUBLISH_CLEAN_ENV GP_ENV_KEEP gp_args gp_v gp_keep gp_bad gp_line gp_self
+
 set -u
 umask 077
 
@@ -26,12 +76,20 @@ for v in $LOCAL_GIT_VARS GIT_SSH GIT_SSH_COMMAND GIT_EXEC_PATH GH_REPO GH_HOST \
   XDG_CONFIG_HOME GH_CONFIG_DIR; do
   unset "$v"
 done
+# Defence in depth (the clean environment above already drops these): tracing can write an environment
+# value such as the account token to a file, askpass programs run with that environment, and loader
+# variables can inject code into git, gh or ssh.
+for v in ${!GIT_TRACE@} ${!DYLD_@} ${!LD_@}; do
+  unset "$v"
+done
+unset GIT_CURL_VERBOSE GIT_REDACT_COOKIES GH_DEBUG DEBUG SSLKEYLOGFILE SSH_ASKPASS
 # Repo config and hooks are writable by whoever edited the repo, so anything able to
 # execute code during a publish is forced off here (git >= 2.31; verified in preflight).
 # This also skips the project's own pre-push hooks on this route.
 GIT_NO_REPLACE_OBJECTS=1
 GIT_PAGER=cat
 # Agents run this without a terminal: a missing credential must fail, not hang.
+# The empty core.askPass (forced below) also stops git from falling back to SSH_ASKPASS.
 GIT_TERMINAL_PROMPT=0
 GH_PROMPT_DISABLED=1
 GIT_SSH_COMMAND='ssh -oBatchMode=yes'
@@ -41,7 +99,7 @@ GIT_NO_LAZY_FETCH=1
 GIT_GRAFT_FILE=/dev/null
 export GIT_NO_REPLACE_OBJECTS GIT_PAGER GIT_TERMINAL_PROMPT GH_PROMPT_DISABLED GIT_SSH_COMMAND GIT_NO_LAZY_FETCH GIT_GRAFT_FILE
 i=0
-for kv in core.hooksPath=/dev/null core.fsmonitor=false core.commitGraph=false advice.graftFileDeprecated=false log.showSignature=false push.gpgSign=false diff.orderFile=/dev/null diff.suppressBlankEmpty=false diff.interHunkContext=0 protocol.ext.allow=never; do
+for kv in core.hooksPath=/dev/null core.fsmonitor=false core.commitGraph=false advice.graftFileDeprecated=false log.showSignature=false push.gpgSign=false diff.orderFile=/dev/null diff.suppressBlankEmpty=false diff.interHunkContext=0 protocol.ext.allow=never core.askPass=; do
   export "GIT_CONFIG_KEY_$i=${kv%%=*}" "GIT_CONFIG_VALUE_$i=${kv#*=}"
   i=$((i + 1))
 done
@@ -64,7 +122,8 @@ resolve_home() {
 RESOLVED_HOME=$(resolve_home) || exit 2
 REGISTRY="$RESOLVED_HOME/.claude/git-publish.registry"
 # gh and git read their user config from the passwd home, never from a caller-chosen HOME.
-# HTTPS_PROXY and SSL_CERT_* stay: the cloud session's egress proxy may need them.
+# The proxy variables stay for both backends. SSL_CERT_FILE, SSL_CERT_DIR and CURL_CA_BUNDLE stay only for the
+# cloud backend, whose egress proxy may need them; the local backend drops them below.
 HOME=$RESOLVED_HOME
 GH_CONFIG_DIR="$RESOLVED_HOME/.config/gh"
 export HOME GH_CONFIG_DIR
@@ -78,6 +137,10 @@ require_tty() {
 BACKEND=local
 if [ "${CLAUDE_CODE_REMOTE:-}" = true ]; then
   BACKEND=cloud-rest
+fi
+# A caller-chosen CA bundle could let a local interceptor read gh and git traffic, tokens included.
+if [ "$BACKEND" = local ]; then
+  unset SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE
 fi
 
 # --- patterns ---
@@ -132,6 +195,7 @@ OPT_PR=""
 OPT_ALLOW_CI=0
 OPT_MARK_READY=0
 OPT_AFTER_READY=0
+OPT_ACCOUNT=""
 parse_opts() {
   local allowed="$1" flag
   shift
@@ -167,6 +231,7 @@ parse_opts() {
       --body-file) [ -z "$OPT_BODY" ] || die "duplicate $flag"; OPT_BODY=$2 ;;
       --style) [ -z "$OPT_STYLE" ] || die "duplicate $flag"; OPT_STYLE=$2 ;;
       --pr) [ -z "$OPT_PR" ] || die "duplicate $flag"; OPT_PR=$2 ;;
+      --account) [ -z "$OPT_ACCOUNT" ] || die "duplicate $flag"; OPT_ACCOUNT=$2 ;;
       *) die "unknown or disallowed argument; allowed here: ${allowed:-none}" ;;
     esac
     shift 2
@@ -186,12 +251,28 @@ require_pr_number() {
 # The CI changes column is `ci` or `-`; a row without it (five columns) means not allowed.
 # Cloud rows (cloud-rest backend only) are `github:<owner>/<repo>`, `-`, level, default branch, style, CI changes;
 # the local backend never honors them, and enable/disable never write them.
+# An optional seventh column names the GitHub account (gh login) used for this repository's network calls;
+# `-` or no column means gh's active account. Cloud rows must leave it empty or `-`.
 R_KEY=""
 R_URL=""
 R_LEVEL=off
 R_DEFAULT=""
 R_STYLE=""
 R_CI=-
+R_ACCOUNT=""
+ACCOUNT_RE='^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
+
+# Whole-string match (no line splitting), confirmed again in the C locale.
+strict_match() { [[ $1 =~ $2 ]] && matches "$1" "$2"; }
+
+# A login in column 7 needs a non-commit level and an https://github.com/ push URL (enable writes no other form).
+valid_account_col() {
+  case "$1" in ""|-) return 0 ;; esac
+  strict_match "$1" "$ACCOUNT_RE" || return 1
+  [ "$2" != commit ] || return 1
+  case "$3" in https://github.com/*) ;; *) return 1 ;; esac
+  parse_github "$3"
+}
 
 repo_key() {
   local common
@@ -200,13 +281,18 @@ repo_key() {
 }
 
 registry_lookup() {
-  local k u l d s c
+  local line k u l d s c a
   [ "$BACKEND" = local ] || { cloud_registry_lookup; return; }
   R_KEY=$(repo_key) || return 1
   [ -n "$R_KEY" ] && [ -f "$REGISTRY" ] && [ ! -L "$REGISTRY" ] || return 1
-  while IFS=$'\t' read -r k u l d s c || [ -n "$k" ]; do
+  while IFS= read -r line || [ -n "$line" ]; do
+    IFS=$'\t' read -r k u l d s c a <<<"$line"
     case "$k" in github:*) continue ;; esac
     [ "$k" = "$R_KEY" ] || continue
+    # read drops a trailing tab, so an empty eighth column would otherwise pass as seven columns.
+    if [ -n "$a" ]; then
+      case "$line" in *$'\t') return 1 ;; esac
+    fi
     case "$l" in commit|push|pr|merge) ;; *) return 1 ;; esac
     case "$s" in conventional|project) ;; *) return 1 ;; esac
     case "$c" in ""|-|ci) ;; *) return 1 ;; esac
@@ -215,7 +301,9 @@ registry_lookup() {
     else
       [ -n "$u" ] && [ "$u" != - ] && matches "$d" "$SAFE_BRANCH_RE" || return 1
     fi
-    R_URL=$u R_LEVEL=$l R_DEFAULT=$d R_STYLE=$s R_CI=${c:--}
+    valid_account_col "$a" "$l" "$u" || return 1
+    [ "$a" != - ] || a=""
+    R_URL=$u R_LEVEL=$l R_DEFAULT=$d R_STYLE=$s R_CI=${c:--} R_ACCOUNT=$a
     return 0
   done <"$REGISTRY"
   return 1
@@ -225,19 +313,21 @@ registry_lookup() {
 # check_remote_identity still refuses a push URL that changed after the lookup.
 # GitHub owner and repository names are case-insensitive, so the key is too; two matching rows are ambiguous.
 cloud_registry_lookup() {
-  local k u l d s c want found=0 row=""
+  local k u l d s c a want found=0 row=""
   cloud_origin || return 1
   R_KEY="github:$REPO_SLUG"
   want=$(lower "$R_KEY")
   [ -f "$REGISTRY" ] && [ ! -L "$REGISTRY" ] || return 1
-  while IFS=$'\t' read -r k u l d s c || [ -n "$k" ]; do
+  while IFS=$'\t' read -r k u l d s c a || [ -n "$k" ]; do
     [ "$(lower "$k")" = "$want" ] || continue
     found=$((found + 1))
     [ "$found" -eq 1 ] || die "more than one github: registry row matches this repository; the user must remove the duplicate"
-    row=$k$'\t'$u$'\t'$l$'\t'$d$'\t'$s$'\t'$c
+    row=$k$'\t'$u$'\t'$l$'\t'$d$'\t'$s$'\t'$c$'\t'$a
   done <"$REGISTRY"
   [ "$found" -eq 1 ] || return 1
-  IFS=$'\t' read -r k u l d s c <<<"$row"
+  IFS=$'\t' read -r k u l d s c a <<<"$row"
+  # The per-repository account never applies to the cloud backend.
+  case "$a" in ""|-) ;; *) return 1 ;; esac
   matches "${k#github:}" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' || return 1
   [ "$u" = - ] || return 1
   case "$l" in commit|push|pr|merge) ;; *) return 1 ;; esac
@@ -346,10 +436,117 @@ resolve_slug() {
   fi
 }
 
+# --- per-repository GitHub account (local backend only) ---
+# The token lives only in this unexported shell variable. It never reaches argv, output or messages:
+# gh gets it through GH_TOKEN in its own environment, git through GP_TOKEN read by an inline credential helper.
+ACCT_TOKEN=""
+TOKEN_RE='^(gh[opusr]_|github_pat_)[A-Za-z0-9_]+$'
+account_mode() { [ "$BACKEND" = local ] && [ -n "$R_ACCOUNT" ]; }
+# Appended to network failure messages so the user knows which login to check.
+acct_note() { account_mode && printf ' (account %s)' "$R_ACCOUNT"; }
+
+# Called at the top level of each networked command, after the offline checks and before the first network
+# call. Never call it from gh_run or git_net: those may run in $( ) subshells, where the token would be lost.
+ensure_account_token() {
+  local help login v
+  account_mode || return 0
+  [ -z "$ACCT_TOKEN" ] || return 0
+  unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE
+  # A proxy URL with a user name makes git ask for a proxy password while GP_TOKEN is in its environment.
+  for v in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+    case "${!v:-}" in *@*) unset "$v" ;; esac
+  done
+  command -v gh >/dev/null 2>&1 || die "gh is not installed"
+  # Like gh_run, these run from / so nothing configured in the repository runs next to the token. They are the
+  # only account-mode calls that keep the (validated) session bus variables: gh reads the keyring here.
+  help=$(cd / && gh auth token --help 2>&1)
+  case "$help" in *--user*) ;; *) die "gh >= 2.40 needed for per-repo account" ;; esac
+  ACCT_TOKEN=$(cd / && gh auth token --hostname github.com --user "$R_ACCOUNT" 2>/dev/null) || ACCT_TOKEN=""
+  [ -n "$ACCT_TOKEN" ] || die "account $R_ACCOUNT is not logged in to github.com; run gh auth login"
+  if [ "${#ACCT_TOKEN}" -gt 255 ] || ! strict_match "$ACCT_TOKEN" "$TOKEN_RE"; then
+    ACCT_TOKEN=""
+    die "gh returned an unusable token for $R_ACCOUNT"
+  fi
+  login=$(gh_run api user --jq .login 2>/dev/null) && [ -n "$login" ] || die "token for $R_ACCOUNT was rejected; re-login $R_ACCOUNT"
+  [ "$(lower "$login")" = "$(lower "$R_ACCOUNT")" ] || die "gh token belongs to another account than $R_ACCOUNT"
+}
+
+# The keyring (Secret Service) is reached through the session bus. Checked in every mode, before any command
+# runs; an unexpected value is dropped, not refused. Only the standard layout is accepted, so an agent cannot
+# point a keyring helper (libsecret `store` included) at a bus it runs: the runtime directory must be exactly
+# /run/user/<uid>, a real directory of this user that neither group nor others can write, and the bus address
+# exactly unix:path=<that directory>/bus with an optional hex guid. macOS has neither (osxkeychain needs neither).
+XDG_RUNTIME_BASE=/run/user
+validate_session_bus() {
+  local d w guid
+  if [ -n "${XDG_RUNTIME_DIR+x}" ]; then
+    d=$XDG_RUNTIME_DIR
+    w=$(find "$d" -maxdepth 0 \( -perm -020 -o -perm -002 \) -print 2>/dev/null) || w=error
+    if [ "$d" != "$XDG_RUNTIME_BASE/$(id -u)" ] || [ -L "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ] || [ -n "$w" ]; then
+      unset XDG_RUNTIME_DIR
+    fi
+  fi
+  [ -n "${DBUS_SESSION_BUS_ADDRESS+x}" ] || return 0
+  if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    unset DBUS_SESSION_BUS_ADDRESS
+    return 0
+  fi
+  # The prefix is the accepted runtime directory, so only the guid can carry other characters; strict_match
+  # matches the whole value, newlines and other control characters included.
+  case "$DBUS_SESSION_BUS_ADDRESS" in
+    "unix:path=$XDG_RUNTIME_DIR/bus") ;;
+    "unix:path=$XDG_RUNTIME_DIR/bus,guid="*)
+      guid=${DBUS_SESSION_BUS_ADDRESS#"unix:path=$XDG_RUNTIME_DIR/bus,guid="}
+      strict_match "$guid" '^[0-9a-f]+$' || unset DBUS_SESSION_BUS_ADDRESS ;;
+    *) unset DBUS_SESSION_BUS_ADDRESS ;;
+  esac
+}
+
+# Every local-backend gh call that reaches GitHub goes through here. gh runs git in its working directory,
+# where repo-configured filters would run with GH_TOKEN in their environment, so in account mode gh runs
+# from / (every call passes --repo and only absolute paths). Without an account the script puts no token
+# into gh's environment, so gh keeps running in the repository as before.
+gh_run() {
+  if account_mode; then
+    [ -n "$ACCT_TOKEN" ] || die "account token was not resolved before a gh call"
+    # The session bus is only for the keyring call in ensure_account_token; gh has the token here.
+    (cd / && unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR && GH_TOKEN="$ACCT_TOKEN" exec gh "$@")
+  else
+    gh "$@"
+  fi
+}
+
+# Every local-backend git call that reaches the remote goes through here. In account mode the credential
+# helper list is reset for every URL (so no other helper runs where GP_TOKEN is set, whatever URL rewriting
+# happens), then for https://github.com, which then gets one helper that answers `get` from GP_TOKEN.
+# The entries are set by index after the forced ones above, so stray caller values are overwritten.
+git_net() {
+  if account_mode; then
+    [ -n "$ACCT_TOKEN" ] || die "account token was not resolved before a git network call"
+    (
+      unset DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
+      GP_TOKEN=$ACCT_TOKEN
+      export GP_TOKEN
+      n=$GIT_CONFIG_COUNT
+      export "GIT_CONFIG_KEY_$n=credential.helper" "GIT_CONFIG_VALUE_$n="
+      n=$((n + 1))
+      export "GIT_CONFIG_KEY_$n=credential.https://github.com.helper" "GIT_CONFIG_VALUE_$n="
+      n=$((n + 1))
+      export "GIT_CONFIG_KEY_$n=credential.https://github.com.helper"
+      export "GIT_CONFIG_VALUE_$n="'!f(){ test "$1" = get && echo username=x-access-token && echo "password=$GP_TOKEN"; }; f'
+      GIT_CONFIG_COUNT=$((n + 1))
+      export GIT_CONFIG_COUNT
+      exec git "$@"
+    )
+  else
+    git "$@"
+  fi
+}
+
 # Output is empty when the branch does not exist on the remote; non-zero on network failure.
 remote_branch_sha() {
   local ref="refs/heads/$1" out
-  out=$(git ls-remote -- "$R_URL" "$ref" 2>/dev/null) || return 1
+  out=$(git_net ls-remote -- "$R_URL" "$ref" 2>/dev/null) || return 1
   printf '%s\n' "$out" | awk -v ref="$ref" '$2 == ref {print $1; exit}'
 }
 
@@ -395,6 +592,12 @@ check_repo_config() {
     case "$lk" in
       http.postbuffer|http.lowspeedlimit|http.lowspeedtime|http.version|http.maxrequests) continue ;;
       filter.lfs.*|lfs.*) die "Git LFS repositories are not supported on this route" ;;
+      # Account mode: filters and submodule update commands run code from git commands that read the work tree,
+      # and that code must never run while the account token is in an environment.
+      filter.*|submodule.*.update)
+        if account_mode; then
+          die "repository config section '${lk%%.*}' has a setting that is not allowed with a per-repository account; remove it first"
+        fi ;;
       core.sshcommand|core.gitproxy|core.askpass|core.alternaterefscommand|credential.*|http.*|url.*|protocol.*|extensions.partialclone|remote.origin.mirror|remote.*.promisor|remote.*.partialclonefilter|remote.*.uploadpack|remote.*.receivepack|remote.*.vcs|remote.*.proxy)
         die "repository config section '${lk%%.*}' has a setting that is not allowed on this route; remove it first" ;;
     esac
@@ -407,6 +610,8 @@ check_remote_identity() {
   urls=$(git remote get-url --push --all origin 2>/dev/null) || die "remote origin has no push URL"
   [ "$urls" = "$R_URL" ] || die "origin push URL differs from the registered URL"
   check_repo_config
+  # Before the first network call: a global insteadOf could redirect the ls-remote of the preflight too.
+  check_no_second_rewrite
 }
 
 check_lfs() {
@@ -424,7 +629,7 @@ compute_base() {
     if [ "$BACKEND" = cloud-rest ]; then
       remote=$(cloud_ref_sha "$R_DEFAULT") || die "cannot read the default branch from GitHub"
     else
-      remote=$(remote_branch_sha "$R_DEFAULT") || die "cannot read the default branch from the registered remote"
+      remote=$(remote_branch_sha "$R_DEFAULT") || die "cannot read the default branch from the registered remote$(acct_note)"
     fi
     if [ -n "$remote" ]; then
       git cat-file -e "$remote^{commit}" 2>/dev/null || die "default branch on the remote is newer than local history; fetch it first"
@@ -470,6 +675,10 @@ preflight() {
 
   check_remote_identity
   check_lfs
+  # Top level of push, pr and merge: the offline checks are done and compute_base makes the first network call.
+  if [ "$mode" = online ]; then
+    ensure_account_token
+  fi
   compute_base "$mode"
   [ "$(git rev-list --count "$BASE_SHA..$HEAD_SHA")" -gt 0 ] || die "no commits to publish since the merge-base"
 }
@@ -615,6 +824,13 @@ BODY_COPY=""
 TITLE_VALUE=""
 CONTENT_SHA=""
 cleanup_copies() { rm -f "$TITLE_COPY" "$BODY_COPY" 2>/dev/null; }
+# Private temporary file. In account mode gh runs from /, so the path given to it must be absolute.
+private_tmp() {
+  case "${TMPDIR:-/tmp}" in
+    /*) mktemp "${TMPDIR:-/tmp}/git-publish.XXXXXX" ;;
+    *) return 1 ;;
+  esac
+}
 trap cleanup_copies EXIT
 trap 'exit 2' INT TERM
 
@@ -667,7 +883,7 @@ copy_input_file() {
     return 1
   fi
   [ -f "$RESOLVED_PATH" ] && [ -r "$RESOLVED_PATH" ] || { refuse "$label file is not a readable regular file"; return 1; }
-  copy=$(mktemp "${TMPDIR:-/tmp}/git-publish.XXXXXX") || die "cannot create a private temporary file"
+  copy=$(private_tmp) || die "cannot create a private temporary file (TMPDIR must be an absolute path)"
   if [ "$label" = title ]; then TITLE_COPY=$copy; else BODY_COPY=$copy; fi
   head -c 65537 "$RESOLVED_PATH" >"$copy" || { refuse "$label file cannot be read"; return 1; }
   size=$(wc -c <"$copy") || { refuse "$label file cannot be read"; return 1; }
@@ -781,24 +997,29 @@ check_no_second_rewrite() {
 do_push() {
   local b=$BRANCH rc
   check_remote_identity
-  check_no_second_rewrite
   [ "$(git rev-parse --quiet --verify "refs/heads/$b^{commit}")" = "$HEAD_SHA" ] || die "branch moved during preflight"
-  git push --no-follow-tags --recurse-submodules=no -- "$R_URL" "$HEAD_SHA:refs/heads/$b" 2>&1 \
+  git_net push --no-follow-tags --recurse-submodules=no -- "$R_URL" "$HEAD_SHA:refs/heads/$b" 2>&1 \
     | LC_ALL=C sed -e 's#://[^/@[:space:]]*@#://***@#g' >&2
   rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ] && account_mode; then
+    printf 'git-publish: push failed (account %s)\n' "$R_ACCOUNT" >&2
+  fi
   return "$rc"
 }
 
 # --- subcommands ---
 cmd_status() {
-  local ci=refused
+  local ci=refused account=active
   [ $# -eq 0 ] || die "status takes no arguments"
   if registry_lookup; then
     [ "$R_CI" = ci ] && ci=allowed
+    [ -z "$R_ACCOUNT" ] || account=$R_ACCOUNT
     printf 'level: %s\nstyle: %s\ndefault branch: %s\nci changes: %s\n' "$R_LEVEL" "$R_STYLE" "$R_DEFAULT" "$ci"
   else
     printf 'level: off\nstyle: -\ndefault branch: -\nci changes: refused\n'
+    account=-
   fi
+  printf 'account: %s\n' "$account"
   printf 'backend: %s\n' "$BACKEND"
 }
 
@@ -861,7 +1082,7 @@ cmd_push() {
 }
 
 cmd_pr() {
-  local remote
+  local remote rc
   parse_opts "--expect-sha --expect-content --title-file --body-file" "$@"
   require_expect_sha
   [ -n "$OPT_TITLE" ] && [ -n "$OPT_BODY" ] || die "--title-file and --body-file are required"
@@ -875,10 +1096,10 @@ cmd_pr() {
   compute_content_sha
   [ "$CONTENT_SHA" = "$OPT_CONTENT" ] || die "PR title or body changed since plan; run plan again"
 
-  remote=$(remote_branch_sha "$BRANCH") || die "cannot read the branch from the registered remote"
+  remote=$(remote_branch_sha "$BRANCH") || die "cannot read the branch from the registered remote$(acct_note)"
   if [ "$remote" != "$HEAD_SHA" ]; then
     do_push || exit $?
-    remote=$(remote_branch_sha "$BRANCH") || die "cannot read the branch from the registered remote"
+    remote=$(remote_branch_sha "$BRANCH") || die "cannot read the branch from the registered remote$(acct_note)"
     [ "$remote" = "$HEAD_SHA" ] || die "remote branch is not at --expect-sha after the push"
   fi
   if [ "$BACKEND" = cloud-rest ]; then
@@ -888,7 +1109,10 @@ cmd_pr() {
     cloud_pr_create
     return
   fi
-  gh pr create --draft --repo "$REPO_SLUG" --base "$R_DEFAULT" --head "$BRANCH" --title "$TITLE_VALUE" --body-file "$BODY_COPY"
+  gh_run pr create --draft --repo "$REPO_SLUG" --base "$R_DEFAULT" --head "$BRANCH" --title "$TITLE_VALUE" --body-file "$BODY_COPY" && return 0
+  rc=$?
+  account_mode && die "gh could not create the pull request (account $R_ACCOUNT)"
+  return "$rc"
 }
 
 # The response is read once; every merge check uses only this copy.
@@ -1043,11 +1267,12 @@ cmd_ci() {
   command -v jq >/dev/null 2>&1 || die "jq is not installed"
   require_level merge
   resolve_slug || die "reading CI is supported on github.com only"
+  ensure_account_token
 
   if [ "$BACKEND" = cloud-rest ]; then
     PR_JSON=$(cloud_pr_view "$OPT_PR") || die "cannot read pull request $OPT_PR with gh"
   else
-    PR_JSON=$(gh pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_CI_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh"
+    PR_JSON=$(gh_run pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_CI_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh$(acct_note)"
   fi
   printf '%s' "$PR_JSON" | jq -se "$PR_CI_SHAPE" >/dev/null 2>&1 || die "$bad"
   compute_ci_verdict
@@ -1089,7 +1314,7 @@ cmd_merge() {
   if [ "$BACKEND" = cloud-rest ]; then
     PR_JSON=$(cloud_pr_view "$OPT_PR") || die "cannot read pull request $OPT_PR with gh"
   else
-    PR_JSON=$(gh pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh"
+    PR_JSON=$(gh_run pr view "$OPT_PR" --repo "$REPO_SLUG" --json "$PR_FIELDS" 2>/dev/null) || die "cannot read pull request $OPT_PR with gh$(acct_note)"
   fi
   printf '%s' "$PR_JSON" | jq -se "$PR_SHAPE" >/dev/null 2>&1 || die "$bad"
   if [ "$BACKEND" = cloud-rest ]; then
@@ -1103,8 +1328,8 @@ cmd_merge() {
   cross=$(pr_field isCrossRepository) || die "$bad"
   [ "$cross" = false ] || die "cross-repository pull requests cannot be merged on this route"
 
-  TITLE_COPY=$(mktemp "${TMPDIR:-/tmp}/git-publish.XXXXXX") || die "cannot create a private temporary file"
-  BODY_COPY=$(mktemp "${TMPDIR:-/tmp}/git-publish.XXXXXX") || die "cannot create a private temporary file"
+  TITLE_COPY=$(private_tmp) || die "cannot create a private temporary file (TMPDIR must be an absolute path)"
+  BODY_COPY=$(private_tmp) || die "cannot create a private temporary file (TMPDIR must be an absolute path)"
   pr_field title >"$TITLE_COPY" || die "$bad"
   pr_field body >"$BODY_COPY" || die "$bad"
   TITLE_VALUE=$(cat -- "$TITLE_COPY")
@@ -1126,7 +1351,7 @@ cmd_merge() {
 
   if [ "$OPT_MARK_READY" = 1 ]; then
     [ "$BACKEND" = local ] || die "cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr $OPT_PR --after-ready"
-    gh pr ready "$OPT_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || die "gh could not mark the pull request ready"
+    gh_run pr ready "$OPT_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || die "gh could not mark the pull request ready$(acct_note)"
     printf 'marked ready: %s %s\n' "$OPT_PR" "$OPT_EXPECT"
     return 0
   fi
@@ -1141,27 +1366,34 @@ cmd_merge() {
     printf '%s %s\n' "$OPT_PR" "$OPT_EXPECT"
     return 0
   fi
-  gh pr merge "$OPT_PR" --repo "$REPO_SLUG" --squash --match-head-commit "$OPT_EXPECT" --subject "$TITLE_VALUE" --body "" >/dev/null 2>&1 \
-    || die "gh could not merge the pull request"
+  gh_run pr merge "$OPT_PR" --repo "$REPO_SLUG" --squash --match-head-commit "$OPT_EXPECT" --subject "$TITLE_VALUE" --body "" >/dev/null 2>&1 \
+    || die "gh could not merge the pull request$(acct_note)"
   printf '%s %s\n' "$OPT_PR" "$OPT_EXPECT"
 }
 
 cmd_enable() {
-  local level urls reason default="" symref name answer origin top ci_col=- ci_word=refused
+  local level urls reason default="" symref name answer origin top ci_col=- ci_word=refused perm
   require_tty
   # enable and disable manage only local rows, never `github:` rows.
   BACKEND=local
+  unset SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE
   [ $# -ge 1 ] || die "enable needs a level: commit, push, pr or merge"
   level=$1
   shift
   case "$level" in commit|push|pr|merge) ;; *) die "enable level must be commit, push, pr or merge" ;; esac
-  parse_opts "--style --allow-ci-changes" "$@"
+  parse_opts "--style --allow-ci-changes --account" "$@"
   [ -n "$OPT_STYLE" ] || OPT_STYLE=conventional
   case "$OPT_STYLE" in conventional|project) ;; *) die "--style must be conventional or project" ;; esac
   if [ "$OPT_ALLOW_CI" = 1 ]; then
     ci_col=ci
     ci_word=allowed
   fi
+  if [ -n "$OPT_ACCOUNT" ]; then
+    strict_match "$OPT_ACCOUNT" "$ACCOUNT_RE" || die "--account must be a GitHub login"
+    [ "$level" != commit ] || die "--account does not apply to level commit"
+  fi
+  # No default is inferred: enable without --account clears it.
+  R_ACCOUNT=$OPT_ACCOUNT
 
   R_KEY=$(repo_key) || die "not inside a git repository"
   case "$R_KEY" in
@@ -1192,9 +1424,22 @@ cmd_enable() {
     if [ "$level" = pr ] || [ "$level" = merge ]; then
       parse_github "$urls" || die "level $level supports github.com remotes only"
     fi
+    # Before the first network call: a global rewrite rule matching this URL would redirect the ls-remote.
+    R_URL=$urls
+    check_no_second_rewrite
+    if account_mode; then
+      case "$urls" in
+        https://github.com/*) parse_github "$urls" || die "account requires an https://github.com/ push URL" ;;
+        *) die "account requires an https://github.com/ push URL" ;;
+      esac
+      ensure_account_token
+      perm=$(gh_run api "repos/$REPO_SLUG" --jq .permissions.push 2>/dev/null) \
+        || die "cannot read the permissions of $REPO_SLUG (account $R_ACCOUNT)"
+      [ "$perm" = true ] || die "account $R_ACCOUNT has no push access to $REPO_SLUG"
+    fi
 
     # Ask the remote first: refs/remotes/origin/HEAD is a local ref anyone can repoint.
-    symref=$(git ls-remote --symref -- "$urls" HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" {print $2; exit}')
+    symref=$(git_net ls-remote --symref -- "$urls" HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" {print $2; exit}')
     [ -n "$symref" ] || symref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/origin/#refs/heads/#')
     default=${symref#refs/heads/}
     [ -n "$default" ] && [ "$default" != "$symref" ] || die "cannot determine the default branch of origin; run git remote set-head origin --auto"
@@ -1209,13 +1454,18 @@ cmd_enable() {
 
   printf 'Repository : %s\nPush URL   : %s\nDefault    : %s\nLevel      : %s\nStyle      : %s\nCI changes : %s\n' \
     "$(printf '%s' "$R_KEY" | sanitize)" "$(printf '%s' "$urls" | sanitize)" "$default" "$level" "$OPT_STYLE" "$ci_word"
+  [ -z "$OPT_ACCOUNT" ] || printf 'Account    : %s\n' "$OPT_ACCOUNT"
   printf "Type the repository name '%s' to confirm: " "$name"
   IFS= read -r answer || die "confirmation was not given"
   [ "$answer" = "$name" ] || die "confirmation did not match the repository name"
 
   {
     registry_other_rows
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$R_KEY" "$urls" "$level" "$default" "$OPT_STYLE" "$ci_col"
+    if [ -n "$OPT_ACCOUNT" ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$R_KEY" "$urls" "$level" "$default" "$OPT_STYLE" "$ci_col" "$OPT_ACCOUNT"
+    else
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$R_KEY" "$urls" "$level" "$default" "$OPT_STYLE" "$ci_col"
+    fi
   } | registry_write
   [ "${PIPESTATUS[1]}" -eq 0 ] || exit 2
   printf 'git-publish: enabled level %s for %s\n' "$level" "$name"
@@ -1239,6 +1489,7 @@ cmd_disable() {
 [ $# -ge 1 ] || die "usage: git-publish.sh status|plan|push|pr|merge|ci [--pr <n> [--after-ready]]|enable|disable"
 SUBCOMMAND=$1
 shift
+validate_session_bus
 case "$SUBCOMMAND" in
   status) cmd_status "$@" ;;
   plan) cmd_plan "$@" ;;
