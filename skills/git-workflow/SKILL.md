@@ -12,7 +12,7 @@ Use when preparing commits, pull requests or releases. The project's own convent
 ## Procedure
 
 1. Check the current branch and working tree with read-only commands. Report unrelated changes.
-2. Work on a feature branch from the agreed base.
+2. One task = one new feature branch from the repository's default branch (the `default branch:` line of `git-publish.sh status`, else `git symbolic-ref --short refs/remotes/origin/HEAD`, else `main`): `git fetch origin <base>`, check `git rev-parse --verify origin/<base>` (stop if it fails), then `git switch --no-track -c <type>/<kebab-summary> origin/<base>`. `--no-track` keeps git from setting `origin/<base>` as the upstream. Stop if the working tree is dirty; the user commits or stashes. Never use git worktrees (`git worktree add` and `move` are denied by the guard).
 3. Write commit messages in the project's format. If none exists, use Conventional Commits.
 4. Determine the version from commits since the last tag:
    - Major: breaking change.
@@ -25,7 +25,7 @@ Use when preparing commits, pull requests or releases. The project's own convent
    - Only if `draft: true`, run `git-publish.sh merge --mark-ready-only --pr <n> --expect-sha <sha>`. The approved plan is enough.
    - Read `ci --pr <n> --after-ready` and report. Use the flag only in the run that marked the PR ready (it maps any skipped check, and no checks, to pending); later re-checks omit it.
    - Run the merging run only when the user confirmed that PR and SHA, after a `passed` verdict: `git fetch origin <default branch>`, then `git-publish.sh merge --pr <n> --expect-sha <sha>`. Never run plain `merge` to change draft state.
-8. In Claude Code cloud sessions (`CLAUDE_CODE_REMOTE=true`) the flow is the same; `status` ends with `backend: local|cloud-rest`. If `~/.claude/hooks/git-publish.sh` does not exist, do not commit or publish: report that publishing needs the Route B setup script. Sessions start on a `claude/...` branch; under style `conventional`, create `<type>/<kebab-summary>` before committing. If `merge --mark-ready-only` refuses in cloud, the user clicks Ready for review on GitHub, then run `ci --pr <n> --after-ready`.
+8. In Claude Code cloud sessions (`CLAUDE_CODE_REMOTE=true`) the flow is the same; `status` ends with `backend: local|cloud-rest`. If `~/.claude/hooks/git-publish.sh` does not exist, do not commit or publish: report that publishing needs the Route B setup script. Sessions start on a `claude/...` branch; the BRANCH step already replaced it with the task branch from the default branch, so do not create a second one. If `merge --mark-ready-only` refuses in cloud, the user clicks Ready for review on GitHub, then run `ci --pr <n> --after-ready`.
 9. To search for guarded text, use the Grep tool or a plain leading `grep`.
 
 ## Publish levels
@@ -76,6 +76,7 @@ Use when preparing commits, pull requests or releases. The project's own convent
 - Direct `git push`, `gh pr create` or `gh pr merge` by an agent. Use the `git-publish.sh` route, and only `release-manager`.
 - Running the merging `merge` without the user's confirmation of the PR link and a `passed` verdict, or running `enable`/`disable`.
 - Committing without checking `git-publish.sh status`.
+- Creating a git worktree, or branching from anything other than the default branch.
 - Rewriting shared history.
 - Skipping hooks to make a commit succeed. This still applies to agents' commits; the publish route skips repo hooks by design.
 - Mixing refactoring and behavior changes in one commit.
