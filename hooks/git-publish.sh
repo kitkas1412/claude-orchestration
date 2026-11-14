@@ -1329,8 +1329,14 @@ ci_print_verdict() {
 
 # Polls until the verdict is final or the --wait budget is spent; never sleeps after the last poll.
 # Elapsed time is at least one interval per sleep, so the bounds hold even when sleep returns early.
+#
+# passed is final only when a second consecutive poll is also passed with the same head and the same number of
+# rollup entries (skipped included), so checks that register late (workflow_run, third-party status apps) are not
+# missed. A changed count restarts the confirmation from the new poll. If the budget leaves no room for the
+# confirming poll, the verdict is returned as pending (never an unconfirmed passed), so the caller waits again.
+# failed and skipped-only stay immediate.
 ci_wait() {
-  local start=$SECONDS polls=0 max elapsed floor
+  local start=$SECONDS polls=0 max elapsed floor count seen=0 seen_count="" seen_head=""
   max=$((1 + OPT_WAIT / CI_POLL_INTERVAL))
   while :; do
     ci_fetch_verdict
@@ -1339,10 +1345,21 @@ ci_wait() {
     floor=$(((polls - 1) * CI_POLL_INTERVAL))
     [ "$elapsed" -ge "$floor" ] || elapsed=$floor
     case "$CI_VERDICT" in
-      passed|failed|skipped-only) break ;;
-      none) [ "$elapsed" -lt "$CI_NONE_GRACE" ] || break ;;
+      passed)
+        count=$(printf '%s' "$PR_JSON" | jq -r '(.statusCheckRollup // []) | length' 2>/dev/null) || die "cannot evaluate the CI checks"
+        if [ "$seen" = 1 ] && [ "$count" = "$seen_count" ] && [ "$CI_HEAD" = "$seen_head" ]; then
+          break
+        fi
+        seen=1; seen_count=$count; seen_head=$CI_HEAD
+        ;;
+      failed|skipped-only) break ;;
+      none) seen=0; [ "$elapsed" -lt "$CI_NONE_GRACE" ] || break ;;
+      *) seen=0 ;;
     esac
-    [ "$polls" -lt "$max" ] && [ $((elapsed + CI_POLL_INTERVAL)) -le "$OPT_WAIT" ] || break
+    if [ "$polls" -ge "$max" ] || [ $((elapsed + CI_POLL_INTERVAL)) -gt "$OPT_WAIT" ]; then
+      [ "$CI_VERDICT" != passed ] || CI_VERDICT=pending
+      break
+    fi
     sleep "$CI_POLL_INTERVAL" || die "cannot wait between CI polls"
   done
 }

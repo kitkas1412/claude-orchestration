@@ -1091,9 +1091,9 @@ waitcase() {
 }
 CKJ_OK="[$CK_OK]"; CKJ_PEND="[$CK_OK,$CK_PEND]"
 resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
-waitcase "pending, pending, success" passed - false 3 2 --wait 90
+waitcase "pending, pending, success (confirmed by a 4th poll)" passed - false 4 3 --wait 90
 resetgh; seqv 1 false "$CKJ_OK"
-waitcase "passed on the first poll never sleeps" passed - false 1 0 --wait 90
+waitcase "passed on the first poll needs one confirming poll" passed - false 2 1 --wait 90
 resetgh; seqv 1 false "[$CK_OK,$CK_FAIL]"
 waitcase "failed on the first poll never sleeps" failed - false 1 0 --wait 90
 resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "[$CK_OK,$CK_FAIL]"
@@ -1110,15 +1110,15 @@ resetgh; seqv 1 false "$CKJ_PEND"
 waitcase "always pending, --wait 480 (max)" pending - false 17 16 --wait 480
 # --after-ready: a draft whose skipped checks are not back yet stays pending until they pass.
 resetgh; seqv 1 true "[$CK_OK,$CK_SKIP]"; seqv 2 true "$CKJ_OK"
-waitcase "after-ready then success" passed - true 2 1 --after-ready --wait 60
+waitcase "after-ready then success" passed - true 3 2 --after-ready --wait 60
 resetgh; seqv 1 true "[$CK_SKIP]"
 waitcase "after-ready, skipped-only never settles" pending lint true 3 2 --after-ready --wait 60
 # none: checks may not be registered yet. ci_wait counts elapsed as max(real time, 30 s per sleep), so stub
 # sleeps still advance it: none turns final after the 120 s grace (poll 5), or the budget ends first.
 resetgh; seqv 1 false '[]'; seqv 2 false "$CKJ_OK"
-waitcase "none then success" passed - false 2 1 --wait 90
+waitcase "none then success" passed - false 3 2 --wait 90
 resetgh; seqv 1 false '[]'; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
-waitcase "none then pending then success" passed - false 3 2 --wait 90
+waitcase "none then pending then success" passed - false 4 3 --wait 90
 resetgh; seqv 1 false '[]'
 out=$("$K0" ci --pr 7 --wait 60 2>"$T/ci.err" </dev/null); rc=$?
 [ "$rc" = 0 ] && printf '%s\n' "$out" | sed -n 1p | grep -qx 'verdict: none' && [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 5 ] && ok || bad "ci wait none persisting: rc=$rc out=$out err=$(cat "$T/ci.err")"
@@ -1140,7 +1140,32 @@ out=$("$K0" ci --pr 7 --expect-sha "$CIHEAD" 2>"$T/ci.err" </dev/null); rc=$?
 [ "$rc" = 2 ] && grep -qF 'pull request head moved' "$T/ci.err" && [ -z "$out" ] && ok || bad "ci expect-sha mismatch without --wait: rc=$rc out=$out err=$(cat "$T/ci.err")"
 nomut "ci expect-sha mismatch"
 resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_OK"
-waitcase "matching --expect-sha on every poll" passed - false 2 1 --wait 60 --expect-sha "$CIHEAD"
+waitcase "matching --expect-sha on every poll" passed - false 3 2 --wait 60 --expect-sha "$CIHEAD"
+# passed is final only after a second consecutive passed poll with the same check count and head.
+CKJ_OK2="[$CK_OK,$CK_NEUT]"
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK"
+waitcase "passed then passed (same count)" passed - false 2 1 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
+waitcase "passed, then a new pending check, then passed twice" passed - false 4 3 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_PEND"
+waitcase "passed, then a new pending check that stays pending" pending - false 4 3 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "[$CK_OK,$CK_FAIL]"
+waitcase "passed then failed" failed - false 2 1 --wait 90
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
+waitcase "passed on the last affordable poll is pending (--wait 60)" pending - false 3 2 --wait 60
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_OK"
+waitcase "passed on the last affordable poll is pending (--wait 30)" pending - false 2 1 --wait 30
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK2"
+waitcase "check count change passed(1) -> passed(2) -> passed(2)" passed docs false 3 2 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK2"; seqv 3 false "$CKJ_OK"; seqv 4 false "$CKJ_OK2"
+waitcase "check count keeps changing, budget ends unconfirmed" pending docs false 4 3 --wait 90
+# Without --expect-sha the head must also be unchanged between the two passed polls.
+OTHERHEAD=fedcba9876543210fedcba9876543210fedcba98
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK" "$OTHERHEAD"
+out=$("$K0" ci --pr 7 --wait 90 2>"$T/ci.err" </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$(wantci passed - false "$OTHERHEAD")" ] && ok || bad "ci wait head change between passed polls: rc=$rc out=$out"
+[ "$(views)" = 3 ] && [ "$(sleeps)" = 2 ] && ok || bad "ci wait head change between passed polls: views=$(views) sleeps=$(sleeps), expected 3 and 2"
+nomut "ci wait head change between passed polls"
 # A gh failure during a poll stops the call.
 resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_OK"; touch "$MS/fail.view.2"
 out=$("$K0" ci --pr 7 --wait 90 2>"$T/ci.err" </dev/null); rc=$?

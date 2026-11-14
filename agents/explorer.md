@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: "Use PROACTIVELY to find files, symbols, entry points, conventions and build/test commands, or to answer where/how X is implemented. Read-only and fast. Does NOT design solutions or edit anything; analyzes root causes only in CI-DIAGNOSE mode."
+description: "Use PROACTIVELY to find files, symbols, entry points, conventions and build/test commands, or to answer where/how X is implemented. Read-only and fast. Does NOT design solutions or edit anything; only in CI-DIAGNOSE mode it analyzes root causes and proposes a fix (not applied)."
 tools: Read, Grep, Glob, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview, mcp__serena__find_implementations
 model: haiku
 effort: low
