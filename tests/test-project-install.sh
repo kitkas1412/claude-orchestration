@@ -72,7 +72,14 @@ assert "Bash PreToolUse entry references filter-test-output.sh" \
 for h in guard-bash guard-write readonly-bash stop-verify-reminder filter-test-output; do
   assert "executable: $h.sh" test -x "$C/hooks/$h.sh"
 done
-eq "no git-publish.sh under .claude" "" "$(find "$C" -name 'git-publish.sh' | head -1)"
+assert "exists: hooks/guard-mcp-serena.sh" test -f "$C/hooks/guard-mcp-serena.sh"
+assert "executable: guard-mcp-serena.sh" test -x "$C/hooks/guard-mcp-serena.sh"
+assert "PreToolUse entry matches serena tools and runs the hook via CLAUDE_PROJECT_DIR" \
+  jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*serena.*") | .hooks[].command | select(contains("hooks/guard-mcp-serena.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
+eq "PreToolUse has 4 entries" 4 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
+eq "exported guard-mcp-serena denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__execute_shell_command","tool_input":{}}')"
+eq "exported guard-mcp-serena allows a project path" 0 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__find_symbol","tool_input":{"relative_path":"src/app.py"}}')"
+eq "no git-publish.sh under .claude""" "$(find "$C" -name 'git-publish.sh' | head -1)"
 assert_not "no apple-design" test -e "$C/skills/apple-design"
 eq "no backup dir created in HOME by test (no .claude/backup)" "" "$(find "$C" -iname '*backup*' | head -1)"
 
