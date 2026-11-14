@@ -197,6 +197,15 @@
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-mcp-playwright.sh"
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*[Cc][Oo][Nn][Tt][Ee][Xx][Tt]7.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-mcp-context7.sh"
+          }
+        ]
       }
     ]
   }
