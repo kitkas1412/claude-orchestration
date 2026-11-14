@@ -11,12 +11,12 @@ Task: $ARGUMENTS
 
 ## When to use
 
-Use for work that benefits from routing, independent verification, or several specialists. For a whole session dedicated to orchestration, the user can run `claude --agent orchestrator` instead.
+Use for work that benefits from routing, independent verification, or several specialists. After the global install the main session already is the orchestrator, so this skill is for sessions started with another agent or without the `agent` setting. For a whole session dedicated to orchestration, the user can run `claude --agent orchestrator` instead.
 
 ## Procedure
 
 1. Read `<REPO_ROOT>/.claude/agents/orchestrator.md` and follow everything from `# ROLE` onward.
-2. Apply these differences, because this is a normal session rather than `--agent orchestrator`:
+2. Apply these differences, because this session is not running as the orchestrator agent:
    - You keep your session tools. Use Edit or Bash yourself only for C1 and R1 work. Delegate everything else.
    - Your Agent tool is not restricted. Use the roster and project agents only, as the protocol states.
    - Ignore the protocol's statement that you have no Write, Edit or Bash.
@@ -39,4 +39,4 @@ Use for work that benefits from routing, independent verification, or several sp
 - Copying the protocol into `CLAUDE.md`, which loads into every subagent.
 
 ---
-Version 1.0.0. Last reviewed 2026-11-08.
+Version 1.0.0. Last reviewed 2026-11-14.
