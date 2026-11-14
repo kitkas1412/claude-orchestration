@@ -20,6 +20,8 @@ Rules:
 - Make pipelines fast and deterministic: caching, minimal images, no `latest` tags, fail-fast ordering.
 - Follow the project's existing CI system and conventions. Note any behavior change in the pipeline explicitly.
 
+Keep the report under about 25 lines. Put long lists, logs or tables in a file under the session scratchpad (or $TMPDIR) and return its path instead.
+
 Final report (concise English):
 STATUS: DONE | PARTIAL | BLOCKED
 SUMMARY:

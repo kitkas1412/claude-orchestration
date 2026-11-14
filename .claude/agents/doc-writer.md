@@ -19,6 +19,8 @@ Rules:
 - Edit only the documentation files (and comments/docstrings) assigned in the brief. Do not change code behavior.
 - Do not put secrets or internal hostnames in examples; use placeholders.
 
+Keep the report under about 25 lines. Put long lists, logs or tables in a file under the session scratchpad (or $TMPDIR) and return its path instead.
+
 Final report (concise English):
 STATUS: DONE | PARTIAL | BLOCKED
 SUMMARY:

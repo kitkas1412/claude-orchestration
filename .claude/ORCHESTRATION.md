@@ -11,7 +11,7 @@ User-level multi-agent setup. Claude Code 2.1.319. Permission mode: `auto`.
 | Learn a subject in a live dialogue | `claude --agent teacher` |
 | Onboard a repository | `/init-project-orchestration [path]` |
 
-The protocol lives only in `agents/orchestrator.md`. Do not copy it into `CLAUDE.md`, which loads into every subagent.
+The protocol lives only in `agents/orchestrator.md`. Do not copy it into `CLAUDE.md`, which loads into every subagent (except agents with `omitClaudeMd`).
 
 ## How routing works
 
@@ -155,6 +155,20 @@ Cloud sessions load only the committed `.claude/` of the repository, not `~/.cla
 - Not verified: a REST merge through the cloud proxy; the repository config check under cloud-added git config entries; `HOME=/root`; whether `/root/.claude` hooks load in cloud. `~/learning` is ephemeral there.
 
 ## Changelog
+
+### 1.14.0 - 2026-11-14
+
+- Token savings, round 2: `explorer`, `test-runner`, `researcher` and `skill-scout` set `omitClaudeMd: true`, so the project `CLAUDE.md`, `.claude/rules/*.md` and `<REPO_ROOT>/.claude/CLAUDE.md` are not loaded into them (verified on Claude Code 2.1.325; requires 2.1.271 or newer). Each restates a compact safety line, and the orchestrator puts project conventions and commands into their briefs.
+- Project export splits the rules: `rules/orchestration.md` is now a short preamble, and `rules/orchestration-global.md` holds the global rules.
+- The global install sets `claudeMdExcludes` to `**/.claude/rules/orchestration-global.md`, so local sessions load the global rules once from `<REPO_ROOT>/.claude/CLAUDE.md`. The project export strips that setting, so cloud sessions still load `orchestration-global.md`.
+
+### 1.13.0 - 2026-11-14
+
+- Token savings, round 1: agent final reports are capped at about 25 lines, with long material written to a scratchpad file (read-only agents summarise instead).
+- Slow test suites run once, through `test-runner`, after the implementers batch their fixes. Implementers run targeted tests only, with no `pgrep` or `sleep` polling.
+- At most one re-audit per task unless High or Critical findings remain; follow-up goes to the same agent with SendMessage where possible.
+- `skill-scout` runs at `effort: low`; the orchestrator keeps opus with an explicit `effort: medium`. The repeated Serena paragraph in eight agents is shortened to one sentence.
+- README has a "Measuring" section (`/usage`, `/context`) and the round-1 rules.
 
 ### 1.12.0 - 2026-11-14
 
