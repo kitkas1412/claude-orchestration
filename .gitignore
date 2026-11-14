@@ -15,5 +15,6 @@
 !.claude/.orchestration-manifest
 node_modules/
 .serena/
+.playwright-mcp/
 *.tgz
 *.local.md

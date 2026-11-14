@@ -24,6 +24,7 @@ case "$CLEAN" in
   */.claude/settings*.json|*/.claude/hooks/*|*/.claude/rules/*|*/.claude/agents/*) deny "guard-rail configuration is protected" ;;
   */.claude/git-publish.registry)                       deny "git-publish registry is protected; use git-publish.sh in your own terminal" ;;
   "$H"/.gitconfig|"$H"/.config/git/config)              deny "global git configuration is protected" ;;
+  "$H"/.claude.json|.mcp.json|*/.mcp.json)              deny "MCP server configuration is protected; edit it manually" ;;
   "$H"/.claude/agents/*|"$H"/.claude/claude.md|"$H"/.claude/skills/*) deny "user-level agent configuration is protected; edit it manually" ;;
 esac
 exit 0

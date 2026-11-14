@@ -92,6 +92,14 @@ n "${CS}[A-Za-z_][A-Za-z0-9_]*=${Q}?${P}(git|gh)${Q}?([[:space:];&]|$)" && n "$V
 # git-publish.sh: agents may run status, plan, push, pr, merge and ci; the registry and enable/disable are user terminal only
 # Checked with every quote and backslash removed, so a split word cannot hide the file name or subcommand.
 ns() { printf '%s' "$NS" | grep -Eiq -- "$1"; }
+# claude or claude-code, with an optional path or @anthropic-ai/ prefix (P) and @version suffix (npx, bunx, pnpm dlx forms).
+MCPSUB='mcp[[:space:]]+(add|add-json|add-from-claude-desktop|remove|reset-project-choices)'
+CLAUDEW="${P}claude(-code)?(@[^[:space:];&|]*)?"
+ns "${CS}${CLAUDEW}[[:space:]]+${G}${MCPSUB}${END}" && deny "claude mcp server registration change"
+# The subcommand after a command variable or substitution, and claude launched by xargs.
+ns "${VARCMD}+${G}${MCPSUB}${END}"                                       && deny "claude mcp change through a command variable"
+ns "(\\\$\\([^)]*\\)|\`[^\`]*\`)[[:space:]]+${G}${MCPSUB}${END}"          && deny "claude mcp change through a command substitution"
+ns "${CS}xargs([[:space:]]+-[^[:space:]]+([[:space:]]+[0-9]+)?)*[[:space:]]+${CLAUDEW}${END}" && deny "claude launched through xargs"
 ns "git-publish\.reg|\.claude/g[^[:space:]/]*[*?[{]|\.claude/[^[:space:]/]*[*?[{][^[:space:]/]*registry" && deny "git-publish registry"
 # A lone leading grep or rg only reads text, so it may search for these words.
 PLAIN_SEARCH=0
@@ -118,7 +126,7 @@ PB='(^|[[:space:]=>(`]|/)'
 PROJ="${PB}(${PNAME}${PEND}|\.claude(/\.?)?${PREND})"
 PROJ_DEST="${PB}(${PNAME}(/[^[:space:]]*)?|\.claude(/\.?)?)[)\`]*[[:space:]]*$|[[:space:]](-t|--target-directory)[=[:space:]]*([^[:space:]]*/)?(${PNAME}${PEND}|\.claude(/\.?)?${PREND})"
 # ">|" is split at "|" below, so check it on the whole command.
-ns ">\|[[:space:]]*(${PCFG}|([^[:space:]]*/)?${PNAME}${PEND})" && deny "write to protected configuration"
+ns ">\|[[:space:]]*(${PCFG}|([^[:space:]]*/)?${PNAME}${PEND}|${HOMEP}/\.claude\.json([[:space:])\`]|$)|([^[:space:]]*/)?\.mcp\.json([[:space:])\`]|$)|([^[:space:]]*/)?\.serena([/[:space:])\`]|$))" && deny "write to protected configuration"
 CWD_P=""
 while IFS= read -r seg; do
   seg_has() { printf '%s' "$seg" | grep -Eiq -- "$1"; }
@@ -169,8 +177,16 @@ while IFS= read -r seg; do
     cmdseg_has "$WRITER"                                                  && deny "write to .serena"
     cmdseg_has "$COPIER" && pseg_has "(^|[[:space:]=>(\`]|/)${SNAME}[)\`]*[[:space:]]*$|[[:space:]](-t|--target-directory)[=[:space:]]*([^[:space:]]*/)?\.serena([/[:space:])\`]|$)" && deny "write to .serena"
   fi
+  # MCP server registration lives in ~/.claude.json and <project>/.mcp.json: agents never write them.
+  MCPF="(${HOMEP}/\\.claude\\.json|(^|[[:space:]=>(\`]|/)\\.mcp\\.json)"
+  MCPE='([[:space:])`]|$)'
+  pseg_has ">[[:space:]]*(${HOMEP}/\\.claude\\.json|([^[:space:]]*/)?\\.mcp\\.json)${MCPE}"                           && deny "write to MCP server configuration"
+  if pseg_has "${MCPF}${MCPE}"; then
+    cmdseg_has "$WRITER"                                                  && deny "write to MCP server configuration"
+    cmdseg_has "$COPIER" && pseg_has "${MCPF}[)\`]*[[:space:]]*$|[[:space:]](-t|--target-directory)[=[:space:]]*${MCPF}${MCPE}" && deny "write to MCP server configuration"
+  fi
   if pseg_has "$PROJ"; then
-    cmdseg_has "$WRITER"                                                  && deny "write to project .claude hooks or settings"
+    cmdseg_has "$WRITER"                                               && deny "write to project .claude hooks or settings"
     cmdseg_has "$COPIER" && pseg_has "$PROJ_DEST"                         && deny "write to project .claude hooks or settings"
     # git checkout/restore and patch rewrite the named files in place.
     # "git restore --staged" without --worktree/-W only unstages, so it is allowed here.

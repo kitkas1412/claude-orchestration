@@ -19,6 +19,33 @@ SERENA_DENIED = (
     'jet_brains_move', 'jet_brains_safe_delete', 'jet_brains_rename', 'jet_brains_debug', 'jet_brains_run_inspections', 'jet_brains_list_inspections',
 )
 SERENA_DENY_PATHS = ('Edit(./.serena/**)', 'Edit(**/.serena/**)')
+PLAYWRIGHT_OBSERVE = {'mcp__playwright__' + n for n in (
+    'browser_navigate', 'browser_navigate_back', 'browser_tabs', 'browser_snapshot', 'browser_take_screenshot',
+    'browser_console_messages', 'browser_network_requests', 'browser_resize', 'browser_wait_for', 'browser_close', 'browser_handle_dialog',
+)}
+PLAYWRIGHT_INTERACT = {'mcp__playwright__' + n for n in (
+    'browser_click', 'browser_hover', 'browser_drag', 'browser_type', 'browser_press_key', 'browser_select_option',
+    'browser_fill_form', 'browser_emulate_media',
+)}
+PLAYWRIGHT_ALLOWED = PLAYWRIGHT_OBSERVE | PLAYWRIGHT_INTERACT
+PLAYWRIGHT_AGENTS = {
+    'ui-ux-engineer': PLAYWRIGHT_ALLOWED, 'test-writer': PLAYWRIGHT_ALLOWED, 'debugger': PLAYWRIGHT_ALLOWED,
+    'code-reviewer': PLAYWRIGHT_OBSERVE,
+}
+PLAYWRIGHT_DENIED = (
+    'browser_evaluate', 'browser_run_code_unsafe', 'browser_run_code', 'browser_file_upload', 'browser_drop', 'browser_find',
+    'browser_network_request', 'browser_get_config', 'browser_install', 'browser_pdf_save', 'browser_annotate', 'browser_highlight',
+    'browser_hide_highlight', 'browser_resume', 'browser_mouse_click_xy', 'browser_mouse_down', 'browser_mouse_drag_xy',
+    'browser_mouse_move_xy', 'browser_mouse_up', 'browser_mouse_wheel', 'browser_start_tracing', 'browser_stop_tracing',
+    'browser_start_recording', 'browser_stop_recording', 'browser_start_video', 'browser_stop_video', 'browser_video_chapter',
+    'browser_video_hide_actions', 'browser_video_show_actions', 'browser_route', 'browser_route_list', 'browser_unroute',
+    'browser_network_state_set', 'browser_storage_state', 'browser_set_storage_state',
+    'browser_cookie_get', 'browser_cookie_list', 'browser_cookie_set', 'browser_cookie_delete', 'browser_cookie_clear',
+    'browser_localstorage_get', 'browser_localstorage_list', 'browser_localstorage_set', 'browser_localstorage_delete', 'browser_localstorage_clear',
+    'browser_sessionstorage_get', 'browser_sessionstorage_list', 'browser_sessionstorage_set', 'browser_sessionstorage_delete', 'browser_sessionstorage_clear',
+    'browser_generate_locator', 'browser_verify_element_visible', 'browser_verify_list_visible', 'browser_verify_text_visible', 'browser_verify_value',
+)
+PLAYWRIGHT_MATCHER = 'mcp__.*([Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|__browser_).*'
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -63,8 +90,15 @@ for f in agents:
     if f[:-3] in SERENA_AGENTS:
         for t in sorted(SERENA_TOOLS - set(listed)):
             errors.append('%s: missing tool %s' % (f, t))
+    pw = {t for t in listed if t.startswith('mcp__playwright__')}
+    if pw != PLAYWRIGHT_AGENTS.get(f[:-3], set()):
+        errors.append('%s: Playwright tools must be exactly %s' % (f, 'the agent set' if f[:-3] in PLAYWRIGHT_AGENTS else 'none (not a browser agent)'))
+    if 'mcpServers' in d:
+        errors.append('%s: mcpServers frontmatter is not allowed' % f)
     for t in listed:
-        if t in SERENA_TOOLS:
+        if t in PLAYWRIGHT_ALLOWED:
+            pass
+        elif t in SERENA_TOOLS:
             if f[:-3] not in SERENA_AGENTS:
                 errors.append('%s: Serena tools are only for the read-only code agents' % f)
         elif t not in TOOLS:
@@ -108,6 +142,13 @@ for sf in ('settings.managed.json', 'project/settings.project.json'):
     for d in deny:
         if d.startswith('Write('):
             errors.append('%s: redundant %s (Edit(...) covers Write; use Edit)' % (sf, d))
+    for n in PLAYWRIGHT_DENIED:
+        if 'mcp__playwright__' + n not in deny:
+            errors.append('%s: deny list lacks mcp__playwright__%s' % (sf, n))
+    if 'mcp__playwright' in deny or 'mcp__playwright__*' in deny:
+        errors.append('%s: must not deny the whole playwright server' % sf)
+    for t in sorted(PLAYWRIGHT_ALLOWED & set(deny)):
+        errors.append('%s: denies allowed tool %s' % (sf, t))
     if 'mcp__serena' in deny or 'mcp__serena__*' in deny:
         errors.append('%s: must not deny the whole serena server' % sf)
     for t in sorted(SERENA_TOOLS & set(deny)):
@@ -118,6 +159,8 @@ if os.path.isfile(sp):
     pre = json.load(open(sp, encoding='utf-8')).get('hooks', {}).get('PreToolUse', [])
     if not any(g.get('matcher') == 'mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*' and any(h.get('command', '').endswith('/guard-mcp-serena.sh') for h in g.get('hooks', [])) for g in pre):
         errors.append('settings.managed.json: guard-mcp-serena.sh not registered with matcher mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*')
+    if not any(g.get('matcher') == PLAYWRIGHT_MATCHER and any(h.get('command', '').endswith('/guard-mcp-playwright.sh') for h in g.get('hooks', [])) for g in pre):
+        errors.append('settings.managed.json: guard-mcp-playwright.sh not registered with matcher ' + PLAYWRIGHT_MATCHER)
     if not pre or not any(h.get('command', '').endswith('/filter-test-output.sh') for h in pre[-1].get('hooks', [])):
         errors.append('settings.managed.json: filter-test-output.sh must be the last PreToolUse entry')
 hp = ROOT + '/hooks/guard-mcp-serena.sh'
@@ -127,6 +170,13 @@ else:
     m = re.search(r'^case "\$\{TOOL#mcp__serena__\}" in\n\s*([a-z_|]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
     if not m or {'mcp__serena__' + n for n in m.group(1).split('|')} != SERENA_TOOLS:
         errors.append('hooks/guard-mcp-serena.sh: allowlist differs from SERENA_TOOLS')
+hp = ROOT + '/hooks/guard-mcp-playwright.sh'
+if not os.path.isfile(hp):
+    errors.append('hooks/guard-mcp-playwright.sh missing')
+else:
+    m = re.search(r'^case "\$\{TOOL#mcp__playwright__\}" in\n\s*([a-z_|]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
+    if not m or {'mcp__playwright__' + n for n in m.group(1).split('|')} != PLAYWRIGHT_ALLOWED:
+        errors.append('hooks/guard-mcp-playwright.sh: allowlist differs from PLAYWRIGHT_OBSERVE | PLAYWRIGHT_INTERACT')
 
 skills = sorted(os.listdir(ROOT + '/skills'))
 for s in skills:

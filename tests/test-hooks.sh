@@ -879,4 +879,279 @@ check guard-bash.sh 0 'ls .serena'
 check guard-bash.sh 0 'echo x > .serenax/a'
 check guard-bash.sh 0 'cp a foo.serena'
 
+# ---- guard-mcp-playwright.sh (allowlist of Playwright MCP tools; loopback-only URLs; no file keys; fail closed) ----
+PWHOOK="$HOOKS/guard-mcp-playwright.sh"
+# Deterministic environment: a stub lsof that reports no listener on port 9 is prepended to PATH for every pw/pw_raw case.
+PWSTUB=$(mktemp -d)
+printf '#!/bin/sh\nexit 0\n' > "$PWSTUB/lsof"; chmod +x "$PWSTUB/lsof"
+PWPATH="$PWSTUB:$PATH"
+pw() { # pw <want exit> <tool name> <tool_input JSON>; a deny must also print BLOCKED on stderr
+  local want=$1 tool=$2 ti=$3 got err in
+  in=$(jq -n --arg t "$tool" --argjson i "$ti" '{tool_name:$t,tool_input:$i}') || { echo "FAIL  bad test JSON: $tool $ti"; fail=1; return; }
+  err=$(printf '%s' "$in" | PATH="$PWPATH" "$PWHOOK" 2>&1 >/dev/null); got=$?
+  if [ "$got" = "$want" ] && { [ "$want" = 0 ] || grep -q '^BLOCKED by guard-mcp-playwright' <<<"$err"; }; then
+    echo "ok    [guard-mcp-playwright.sh] $tool $ti"
+  else
+    echo "FAIL  [guard-mcp-playwright.sh] want=$want got=$got: $tool $ti stderr=$err"; fail=1
+  fi
+}
+pw_raw() { # pw_raw <want exit> <raw stdin>
+  local want=$1 input=$2 got err
+  err=$(printf '%s' "$input" | PATH="$PWPATH" "$PWHOOK" 2>&1 >/dev/null); got=$?
+  if [ "$got" = "$want" ] && { [ "$want" = 0 ] || grep -q '^BLOCKED by guard-mcp-playwright' <<<"$err"; }; then
+    echo "ok    [guard-mcp-playwright.sh] raw input: $input"
+  else
+    echo "FAIL  [guard-mcp-playwright.sh] want=$want got=$got: raw input: $input stderr=$err"; fail=1
+  fi
+}
+PN=mcp__playwright__browser_navigate
+# allowed URLs (loopback only)
+pw 0 $PN '{"url":"http://localhost:5173/a?b#c"}'
+pw 0 $PN '{"url":"https://127.0.0.1:8443/"}'
+pw 0 $PN '{"url":"http://[::1]:3000/"}'
+pw 0 $PN '{"url":"http://localhost"}'
+pw 0 $PN '{"url":"http://localhost/"}'
+pw 0 $PN '{"url":"http://127.0.0.1:65535/x"}'
+pw 0 mcp__playwright__browser_tabs '{"action":"new","url":"http://localhost:3000/"}'
+pw 0 mcp__playwright__browser_tabs '{"action":"list"}'
+pw 0 mcp__playwright__browser_type '{"text":"multi\nline"}'
+pw 0 mcp__playwright__browser_take_screenshot '{}'
+# every allowlisted tool passes with a valid input from its own argument list
+pw 0 mcp__playwright__browser_navigate '{"url":"http://localhost:3000/"}'
+pw 0 mcp__playwright__browser_navigate_back '{}'
+pw 0 mcp__playwright__browser_tabs '{"action":"select","index":1}'
+pw 0 mcp__playwright__browser_snapshot '{"depth":3}'
+pw 0 mcp__playwright__browser_take_screenshot '{"element":"button","fullPage":true}'
+pw 0 mcp__playwright__browser_console_messages '{"level":"error"}'
+pw 0 mcp__playwright__browser_network_requests '{"static":false}'
+pw 0 mcp__playwright__browser_resize '{"width":800,"height":600}'
+pw 0 mcp__playwright__browser_wait_for '{"time":1}'
+pw 0 mcp__playwright__browser_close '{}'
+pw 0 mcp__playwright__browser_handle_dialog '{"accept":true}'
+pw 0 mcp__playwright__browser_click '{"element":"button","target":"e1"}'
+pw 0 mcp__playwright__browser_hover '{"element":"button"}'
+pw 0 mcp__playwright__browser_drag '{"startElement":"a","startTarget":"e1","endElement":"b","endTarget":"e2"}'
+pw 0 mcp__playwright__browser_type '{"element":"input","text":"hi","submit":true}'
+pw 0 mcp__playwright__browser_press_key '{"key":"Tab"}'
+pw 0 mcp__playwright__browser_select_option '{"element":"sel","values":["a"]}'
+pw 0 mcp__playwright__browser_fill_form '{"fields":[{"name":"n","type":"textbox","target":"e1","value":"v"}]}'
+pw 0 mcp__playwright__browser_emulate_media '{"colorScheme":"dark"}'
+# absent tool_input is treated as {}
+pw_raw 0 '{"tool_name":"mcp__playwright__browser_close"}'
+# '@' kept out of URL literals so the secret scanner does not flag test data
+AT='@'
+# nested src / loopback values
+pw 0 mcp__playwright__browser_fill_form '{"fields":[{"src":"http://localhost:3000/x.png"}]}'
+pw 0 $PN "{\"url\":\"http://localhost:3000#${AT}evil.com\"}"
+pw 0 $PN '{"url":"http://localhost:3000/?@evil"}'
+pw 0 $PN '{"url":"http://[::1]"}'
+pw 0 $PN '{"url":"http://localhost:03000/"}'
+# unexpected top-level keys, wrong tool_input types
+pw 2 mcp__playwright__browser_click '{"foo":1}'
+pw 2 mcp__playwright__browser_take_screenshot '{"filename":"x.png"}'
+pw 2 mcp__playwright__browser_tabs '{"isolatedContext":true}'
+pw 2 mcp__playwright__browser_close '{"element":"x"}'
+pw 2 $PN '{"url":"http://localhost/","extra":1}'
+pw 2 $PN '{"ＵＲＬ":"http://localhost/"}'
+pw_raw 2 '{"tool_name":"mcp__playwright__browser_snapshot","tool_input":"str"}'
+pw_raw 2 '{"tool_name":"mcp__playwright__browser_snapshot","tool_input":[]}'
+pw_raw 2 '{"tool_name":"mcp__playwright__browser_snapshot","tool_input":null}'
+# nested file keys inside fill_form items (any case, suffix forms)
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"file":"/etc/hosts"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"Directory":"/tmp"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"outputFolder":"/tmp"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"saveTo":"/tmp/x"}]}'
+# nested URL-like keys must be loopback
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"src":"http://evil.com"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"location":"http://evil.com"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"origin":"http://evil.com"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"host":"http://evil.com"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[{"link":"http://evil.com"}]}'
+pw 2 mcp__playwright__browser_fill_form '{"fields":[[{"url":"https://evil.com"}]]}'
+pw 2 $PN '{"url":"http://lоcalhost/"}'
+# denied URLs
+pw 2 $PN '{"url":"https://example.com/"}'
+pw 2 $PN '{"url":"http://localhost@evil.com/"}'
+pw 2 $PN "{\"url\":\"http://localhost:3000${AT}evil.com/\"}"
+pw 2 $PN "{\"url\":\"http://localhost:3000\\t${AT}evil.com\"}"
+pw 2 $PN '{"url":"http://localhost/\nevil"}'
+pw 2 $PN '{"url":"http://localhost\\evil.com/"}'
+pw 2 $PN '{"url":"http://localhost./"}'
+pw 2 $PN '{"url":"http://localhost.evil.com/"}'
+pw 2 $PN '{"url":"http://127.1/"}'
+pw 2 $PN '{"url":"http://2130706433/"}'
+pw 2 $PN '{"url":"http://0x7f000001/"}'
+pw 2 $PN '{"url":"http://0.0.0.0:3000/"}'
+pw 2 $PN '{"url":"http://[::ffff:127.0.0.1]/"}'
+pw 2 $PN '{"url":"http://localtest.me:3000/"}'
+pw 2 $PN '{"url":"http://127.0.0.1.nip.io/"}'
+pw 2 $PN '{"url":"http://%6c%6fcalhost/"}'
+pw 2 $PN '{"url":"HTTP://LOCALHOST/"}'
+pw 2 $PN '{"url":"http://LOCALHOST/"}'
+pw 2 $PN '{"url":"file:///etc/hosts"}'
+pw 2 $PN '{"url":"data:text/html,x"}'
+pw 2 $PN '{"url":"javascript:alert(1)"}'
+pw 2 $PN '{"url":"about:blank"}'
+pw 2 $PN '{"url":"view-source:http://localhost/"}'
+pw 2 $PN '{"url":"chrome://settings"}'
+pw 2 $PN '{"url":"ws://localhost:3000/"}'
+pw 2 $PN '{"url":"blob:http://localhost/x"}'
+pw 2 $PN '{"url":""}'
+pw 2 $PN '{"url":"//localhost/"}'
+pw 2 $PN '{"url":"http://localhost:0/"}'
+pw 2 $PN '{"url":"http://localhost:65536/"}'
+pw 2 $PN '{"url":"http://localhost:99999/"}'
+pw 2 $PN '{"url":" http://localhost/"}'
+pw 2 $PN '{"url":5}'
+pw 2 $PN '{"url":null}'
+pw 2 $PN '{"url":["http://localhost/"]}'
+pw 2 $PN '{"opts":{"targetUrl":"https://evil.com"}}'
+pw 2 mcp__playwright__browser_tabs '{"action":"new","url":"https://example.com"}'
+pw 2 mcp__playwright__browser_click '{"href":"https://example.com"}'
+pw 2 mcp__playwright__browser_click '{"a":[{"b":{"uri":"file:///etc/hosts"}}]}'
+# denied file keys (any depth, any case)
+pw 2 mcp__playwright__browser_take_screenshot '{"filename":"x.png"}'
+pw 2 mcp__playwright__browser_take_screenshot '{"Filename":"x"}'
+pw 2 mcp__playwright__browser_snapshot '{"outputPath":"/tmp/x"}'
+pw 2 mcp__playwright__browser_snapshot '{"paths":["/etc/hosts"]}'
+pw 2 mcp__playwright__browser_snapshot '{"outputDir":"/tmp"}'
+pw 2 mcp__playwright__browser_snapshot '{"a":{"b":[{"FILENAME":"x"}]}}'
+# denied tools (not on the allowlist), including unknown future ones
+for t in browser_evaluate browser_run_code_unsafe browser_file_upload browser_drop browser_find browser_network_request browser_cookie_get browser_route browser_storage_state browser_pdf_save browser_mouse_click_xy browser_start_tracing browser_get_config browser_verify_text_visible browser_future_tool; do
+  pw 2 "mcp__playwright__$t" '{}'
+done
+pw 2 mcp__playwright__ '{}'
+# lookalike prefixes
+pw 2 mcp__pw__browser_click '{}'
+pw 2 mcp__Playwright__browser_click '{}'
+pw 2 mcp__playwright_x__browser_navigate '{"url":"http://localhost/"}'
+pw 2 mcp__other__browser_navigate '{"url":"http://localhost/"}'
+# fail closed on bad input and missing jq
+pw_raw 2 ''
+pw_raw 2 '{bad json'
+pw_raw 2 '{"tool_name":'
+pw_raw 2 '{}'
+pw_raw 2 '{"tool_input":{}}'
+pw_raw 2 '{"tool_name":123}'
+pw_raw 2 '{"tool_name":null,"tool_input":{}}'
+pw_raw 0 '{"tool_name":"mcp__playwright__browser_snapshot","tool_input":{}}'
+NOJQ4=$(mktemp -d)
+printf '%s' '{"tool_name":"mcp__playwright__browser_snapshot","tool_input":{}}' | PATH="$NOJQ4" "$BASH_BIN" "$PWHOOK" >/dev/null 2>&1; got=$?
+if [ "$got" = 2 ]; then echo "ok    [guard-mcp-playwright.sh] jq missing"; else echo "FAIL  [guard-mcp-playwright.sh] jq missing: want=2 got=$got"; fail=1; fi
+rmdir "$NOJQ4"
+# embedded newline in tool_name
+pw_raw 2 '{"tool_name":"mcp__playwright__browser_snap\nshot","tool_input":{}}'
+# port 9 listener (stub lsof prints a listener line) -> deny, stderr names port 9
+PWL=$(mktemp -d)
+printf '#!/bin/sh\nprintf "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\\nnc 123 u 3u IPv4 0t0 TCP 127.0.0.1:9 (LISTEN)\\n"\n' > "$PWL/lsof"; chmod +x "$PWL/lsof"
+err=$(printf '%s' '{"tool_name":"mcp__playwright__browser_snapshot","tool_input":{}}' | PATH="$PWL:$PATH" "$PWHOOK" 2>&1 >/dev/null); got=$?
+if [ "$got" = 2 ] && grep -q 'port 9' <<<"$err"; then echo "ok    [guard-mcp-playwright.sh] listener on port 9 denied"; else echo "FAIL  [guard-mcp-playwright.sh] port 9 listener: want=2 got=$got stderr=$err"; fail=1; fi
+rm -f "$PWL/lsof"; rmdir "$PWL"
+# Patched copies of the hook (like test-git-publish.sh): the /dev/tcp target is hard-coded in the hook, so tests rewrite it in a temp copy.
+PWIN='{"tool_name":"mcp__playwright__browser_snapshot","tool_input":{}}'
+PWP=$(mktemp -d)
+grep -q '/dev/tcp/127\.0\.0\.1/9)' "$PWHOOK" || { echo "FAIL  [guard-mcp-playwright.sh] probe line not found for patching"; fail=1; }
+# Listener on the probe target (a real one, on an ephemeral port) -> deny, even though the lsof stub reports nothing
+if command -v python3 >/dev/null 2>&1; then
+  python3 -I -c 'import socket,sys,time
+s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(5)
+open(sys.argv[1],"w").write(str(s.getsockname()[1])); time.sleep(30)' "$PWP/port" &
+  LPID=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -s "$PWP/port" ] && break; sleep 0.1; done
+  sed "s#/dev/tcp/127\.0\.0\.1/9)#/dev/tcp/127.0.0.1/$(cat "$PWP/port"))#" "$PWHOOK" > "$PWP/listen.sh"
+  err=$(printf '%s' "$PWIN" | PATH="$PWPATH" "$BASH_BIN" "$PWP/listen.sh" 2>&1 >/dev/null); got=$?
+  if [ "$got" = 2 ] && grep -q 'port 9' <<<"$err"; then echo "ok    [guard-mcp-playwright.sh] /dev/tcp probe sees a listener"; else echo "FAIL  [guard-mcp-playwright.sh] probe listener: want=2 got=$got stderr=$err"; fail=1; fi
+  kill "$LPID" 2>/dev/null; wait "$LPID" 2>/dev/null
+else
+  echo "SKIP  [guard-mcp-playwright.sh] python3 missing: /dev/tcp listener test"
+fi
+# lsof missing but /dev/tcp probe works and nothing listens -> allow (PATH has only jq, cat, tr)
+NOLSOF=$(mktemp -d)
+for b in jq cat tr; do ln -s "$(command -v $b)" "$NOLSOF/$b"; done
+err=$(printf '%s' "$PWIN" | PATH="$NOLSOF" "$BASH_BIN" "$PWHOOK" 2>&1 >/dev/null); got=$?
+if [ "$got" = 0 ]; then echo "ok    [guard-mcp-playwright.sh] lsof missing, probe ran: allowed"; else echo "FAIL  [guard-mcp-playwright.sh] lsof missing with probe: want=0 got=$got stderr=$err"; fail=1; fi
+# lsof missing and no /dev/tcp support (simulated: path rewritten to a missing file) -> deny
+sed 's#/dev/tcp/127\.0\.0\.1/9)#/dev/nope/127.0.0.1/9)#' "$PWHOOK" > "$PWP/nodevtcp.sh"
+err=$(printf '%s' "$PWIN" | PATH="$NOLSOF" "$BASH_BIN" "$PWP/nodevtcp.sh" 2>&1 >/dev/null); got=$?
+if [ "$got" = 2 ] && grep -q 'lsof' <<<"$err"; then echo "ok    [guard-mcp-playwright.sh] no /dev/tcp and no lsof denied"; else echo "FAIL  [guard-mcp-playwright.sh] no /dev/tcp, no lsof: want=2 got=$got stderr=$err"; fail=1; fi
+# no /dev/tcp support but lsof stub present and empty -> allow
+err=$(printf '%s' "$PWIN" | PATH="$PWPATH" "$BASH_BIN" "$PWP/nodevtcp.sh" 2>&1 >/dev/null); got=$?
+if [ "$got" = 0 ]; then echo "ok    [guard-mcp-playwright.sh] no /dev/tcp, lsof empty: allowed"; else echo "FAIL  [guard-mcp-playwright.sh] no /dev/tcp, lsof present: want=0 got=$got stderr=$err"; fail=1; fi
+rm -f "$NOLSOF/jq" "$NOLSOF/cat" "$NOLSOF/tr"; rmdir "$NOLSOF"
+rm -f "$PWP/port" "$PWP/listen.sh" "$PWP/nodevtcp.sh"; rmdir "$PWP"
+rm -f "$PWSTUB/lsof"; rmdir "$PWSTUB"
+
+# ---- guard-bash.sh: claude mcp config mutation and MCP config file writes ----
+check guard-bash.sh 2 'claude mcp add foo -- npx foo'
+check guard-bash.sh 2 "claude mcp add-json foo '{}'"
+check guard-bash.sh 2 'claude mcp add-from-claude-desktop'
+check guard-bash.sh 2 'claude mcp remove foo'
+check guard-bash.sh 2 'claude mcp reset-project-choices'
+check guard-bash.sh 2 'cd x && claude mcp add foo'
+check guard-bash.sh 2 'ls; claude mcp remove foo'
+check guard-bash.sh 2 'FOO=1 claude mcp add foo'
+check guard-bash.sh 2 'command claude mcp add foo'
+check guard-bash.sh 2 'exec claude mcp add foo'
+check guard-bash.sh 2 '/usr/local/bin/claude mcp add foo'
+check guard-bash.sh 2 'claude --debug mcp add foo'
+check guard-bash.sh 2 'echo hi | claude mcp remove foo'
+check guard-bash.sh 2 '"claude" mcp add foo'
+check guard-bash.sh 2 'echo {} > ~/.claude.json'
+check guard-bash.sh 2 'echo {} >> $HOME/.claude.json'
+check guard-bash.sh 2 'echo {} > /Users/neco/.claude.json'
+check guard-bash.sh 2 'echo {} > .mcp.json'
+check guard-bash.sh 2 'echo {} > ./sub/.mcp.json'
+check guard-bash.sh 2 'echo {} | tee .mcp.json'
+check guard-bash.sh 2 'sed -i s/a/b/ ~/.claude.json'
+check guard-bash.sh 2 'mv x .mcp.json'
+check guard-bash.sh 2 'cp evil.json .mcp.json'
+check guard-bash.sh 2 'cp evil.json ~/.claude.json'
+check guard-bash.sh 2 'cp evil ${HOME}/.claude.json'
+check guard-bash.sh 2 'cd ~ && echo {} > .claude.json'
+check guard-bash.sh 0 'claude --version'
+check guard-bash.sh 0 'claude mcp list'
+check guard-bash.sh 0 'claude mcp get foo'
+check guard-bash.sh 0 'cat README.md'
+check guard-bash.sh 0 'cat ~/.claude.json'
+check guard-bash.sh 0 'cat .mcp.json'
+check guard-bash.sh 0 'cp ~/.claude.json /tmp/backup.json'
+check guard-bash.sh 0 'echo hi > src/app.json'
+check guard-bash.sh 0 'sed -i s/a/b/ src/app.json'
+# claude through npx-style launchers, variables, substitutions, xargs; >| redirects; other write forms
+check guard-bash.sh 2 'npx @anthropic-ai/claude-code mcp add foo'
+check guard-bash.sh 2 'npx -y @anthropic-ai/claude-code@latest mcp remove foo'
+check guard-bash.sh 2 'bunx @anthropic-ai/claude-code mcp add foo'
+check guard-bash.sh 2 'pnpm dlx @anthropic-ai/claude-code mcp add foo'
+check guard-bash.sh 2 'c=claude; $c mcp add foo'
+check guard-bash.sh 2 '$(echo claude) mcp add foo'
+check guard-bash.sh 2 'echo mcp add x y | xargs claude'
+check guard-bash.sh 2 'CLAUDE MCP ADD foo'
+check guard-bash.sh 2 'claude  mcp   add foo'
+check guard-bash.sh 2 'echo {} >| ~/.claude.json'
+check guard-bash.sh 2 'echo {} >| .mcp.json'
+check guard-bash.sh 2 'echo x >| .serena/project.yml'
+check guard-bash.sh 2 'ln -s x ~/.claude.json'
+check guard-bash.sh 2 'perl -i -pe s/a/b/ ~/.claude.json'
+check guard-bash.sh 2 'cd ~; cp x .claude.json'
+check guard-bash.sh 0 'npm view @anthropic-ai/claude-code version'
+check guard-bash.sh 0 'npx @anthropic-ai/claude-code --version'
+check guard-bash.sh 0 'echo {} >| out.json'
+
+# ---- guard-write.sh: MCP config files ----
+checkw 2 "$HOME/.claude.json"
+checkw 2 '/Users/neco/Developer/proj/.mcp.json'
+checkw 2 '.mcp.json'
+checkw 2 '/Users/neco/Developer/proj/sub/../.MCP.json'
+checkw 0 'src/app.json'
+checkw 0 '/Users/neco/Developer/proj/mcp.json'
+checkw 0 'README.md'
+for p in "$HOME/.claude.json" '/Users/neco/Developer/proj/.mcp.json' '.mcp.json'; do
+  jq -n --arg p "$p" '{tool_input:{notebook_path:$p}}' | "$HOOKS/guard-write.sh" >/dev/null 2>&1; got=$?
+  if [ "$got" = 2 ]; then echo "ok    [guard-write.sh] notebook_path $p"; else echo "FAIL  [guard-write.sh] notebook_path want=2 got=$got: $p"; fail=1; fi
+done
+for p in 'src/app.json' 'README.md'; do
+  jq -n --arg p "$p" '{tool_input:{notebook_path:$p}}' | "$HOOKS/guard-write.sh" >/dev/null 2>&1; got=$?
+  if [ "$got" = 0 ]; then echo "ok    [guard-write.sh] notebook_path $p"; else echo "FAIL  [guard-write.sh] notebook_path want=0 got=$got: $p"; fail=1; fi
+done
+
 [ "$fail" = 0 ] && echo "All hook checks passed." || { echo "Some hook checks failed."; exit 1; }

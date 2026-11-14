@@ -76,10 +76,17 @@ assert "exists: hooks/guard-mcp-serena.sh" test -f "$C/hooks/guard-mcp-serena.sh
 assert "executable: guard-mcp-serena.sh" test -x "$C/hooks/guard-mcp-serena.sh"
 assert "PreToolUse entry matches serena tools and runs the hook via CLAUDE_PROJECT_DIR" \
   jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*") | .hooks[].command | select(contains("hooks/guard-mcp-serena.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
-eq "PreToolUse has 4 entries" 4 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
+eq "PreToolUse has 5 entries" 5 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
 eq "exported guard-mcp-serena denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__execute_shell_command","tool_input":{}}')"
 eq "exported guard-mcp-serena allows an existing project path" 0 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__find_symbol","tool_input":{"relative_path":"CLAUDE.md"}}')"
 eq "exported guard-mcp-serena denies a non-existent path" 2 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__find_symbol","tool_input":{"relative_path":"src/app.py"}}')"
+assert "exists: hooks/guard-mcp-playwright.sh" test -f "$C/hooks/guard-mcp-playwright.sh"
+assert "executable: guard-mcp-playwright.sh" test -x "$C/hooks/guard-mcp-playwright.sh"
+assert "PreToolUse entry matches playwright tools and runs the hook via CLAUDE_PROJECT_DIR" \
+  jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*([Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|__browser_).*") | .hooks[].command | select(contains("hooks/guard-mcp-playwright.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
+eq "exported guard-mcp-playwright denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-playwright.sh '{"tool_name":"mcp__playwright__browser_evaluate","tool_input":{}}')"
+eq "exported guard-mcp-playwright allows navigate to localhost" 0 "$(run_guard "$A" guard-mcp-playwright.sh '{"tool_name":"mcp__playwright__browser_navigate","tool_input":{"url":"http://localhost:3000/"}}')"
+eq "exported guard-mcp-playwright denies navigate to an external URL" 2 "$(run_guard "$A" guard-mcp-playwright.sh '{"tool_name":"mcp__playwright__browser_navigate","tool_input":{"url":"https://example.com/"}}')"
 eq "no git-publish.sh under .claude" "" "$(find "$C" -name 'git-publish.sh' | head -1)"
 assert_not "no apple-design" test -e "$C/skills/apple-design"
 eq "no backup dir created in HOME by test (no .claude/backup)" "" "$(find "$C" -iname '*backup*' | head -1)"

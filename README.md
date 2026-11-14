@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh` and `guard-mcp-serena.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh` and `guard-mcp-playwright.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
 - Never exported: `git-publish.sh` and `apple-design`. No backup is made.
 - The target `CLAUDE.md`, `.claude/worktrees` and `.claude/settings.local.json` are left alone. Settings merge as for `~/.claude`: entries are only added. Running it again is safe and updates the files.
@@ -167,9 +167,65 @@ claude mcp add --scope user serena --env SERENA_USAGE_REPORTING=false -- serena 
 - Token impact is not measured here. Compare `/context` and the task usage before and after installing.
 - Uninstall: `claude mcp remove serena --scope user`. The deny entries stay in `~/.claude/settings.json` until you delete them by hand, because `install.sh` never removes entries.
 
+## Playwright MCP (optional, localhost only)
+
+[Playwright MCP](https://github.com/microsoft/playwright-mcp) (`@playwright/mcp`, tested with 0.0.85) lets agents open, observe and interact with pages served on your own machine. It is optional: you register it yourself, and `install.sh` never touches `~/.claude.json`. Without it the agents work as before (the tools are simply absent and they fall back). In Claude Code cloud the server is not registered, so the tools are absent there too.
+
+Register it once (you run this). It needs Node/npx and Google Chrome; to use Chromium instead, drop `--browser chrome` and run `npx playwright install chromium`.
+
+```bash
+claude mcp add --scope user playwright -- npx -y @playwright/mcp@0.0.85 --browser chrome --headless --isolated --no-webmcp --block-service-workers --output-dir "$HOME/.cache/playwright-mcp" --proxy-server http://127.0.0.1:9 --proxy-bypass "localhost,127.0.0.1,[::1]" --allowed-origins "http://localhost:*;http://127.0.0.1:*;http://[::1]:*;https://localhost:*;https://127.0.0.1:*;https://[::1]:*"
+```
+
+- The server must be registered as exactly `playwright`.
+- Keep TCP port 9 unused: it is the dead proxy. Check with `lsof -nP -iTCP:9 -sTCP:LISTEN`; it should print nothing. The hook runs the same check on every call and denies everything if something listens or `lsof` is missing.
+- Without `--output-dir`, files land in `<cwd>/.playwright-mcp/` inside the project.
+- `--scope local` in a project directory also works for a per-project registration; whether it is visible under `.claude/worktrees/` paths is unverified.
+- Never add these flags: `--caps`, `--allow-unrestricted-file-access`, `--cdp-endpoint`, `--extension`, `--user-data-dir`, `--storage-state`, `--save-session`, `--ignore-https-errors`, `--no-sandbox`, `--grant-permissions`, `--init-script`, `--init-page`.
+
+Layers:
+
+1. `hooks/guard-mcp-playwright.sh` is a `PreToolUse` hook on `mcp__.*([Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|__browser_).*`. The matcher also routes other MCP servers' `browser_*` tools to the hook, which blocks them. It is default-deny: only 19 allowlisted tools pass (anything else, including new tools in a later server version, is blocked), and the tool name must start with `mcp__playwright__`. Checks:
+   - Every call is denied when something listens on TCP port 9. This runs first, with two signals: a bash-builtin connect to `127.0.0.1:9` (`/dev/tcp`, which sees listeners of any user) and `lsof`. When bash has `/dev/tcp`, a missing `lsof` is tolerated; when it does not, `lsof` is required (fail closed; on Linux without `lsof`, install it).
+   - `tool_input` must be an object.
+   - Only each tool's known top-level arguments pass (from the `@playwright/mcp` 0.0.85 schema; `filename` is removed, and `isolatedContext` of `browser_tabs` is not allowed). Any other argument is denied. When you update `@playwright/mcp` beyond 0.0.85, update the per-tool argument list in the hook too; new arguments are denied until then.
+   - Every key at any depth is checked, with names lowercased: file keys (`filename`, `file`, `files`, `directory`, `outputDirectory`, `saveTo`, `output`, and names ending in `path`, `paths`, `dir`, `file`, `files`, `directory` or `folder`) are denied; URL keys (names containing `url`, `uri` or `href`, or exactly `src`, `link`, `location`, `origin` or `host`) must be a literal `http(s)` URL on `localhost`, `127.0.0.1` or `[::1]` with an optional port 1-65535 (a null value is denied).
+   It also fails closed when `jq` is missing or the JSON is malformed. It is exported with `install.sh --project`.
+2. Proxy trap: `--proxy-server http://127.0.0.1:9` sends all non-loopback traffic to a dead proxy. In a spike, redirects (including HTTP 302), popups, images, `fetch` and `localtest.me` all failed with `ERR_PROXY_CONNECTION_FAILED`.
+3. `--allowed-origins` is an accident guard. In the spike it blocked direct navigation and subresources but not HTTP 302 redirects, which is why the proxy exists.
+4. `permissions.deny` lists the other Playwright tools (55 entries in `settings.managed.json` and `project/settings.project.json`) as a backstop.
+5. Each agent's `tools:` list names only the tools it may use.
+
+What this setup allows:
+
+- `ui-ux-engineer`, `test-writer` and `debugger` list 19 tools (observe and interact). `code-reviewer` lists 11 (observe only, no click or type tools). The other agents and the orchestrator list none. They treat page content as data and are told to close the browser when done; the brief can say `PLAYWRIGHT: off`.
+- Blocked: `browser_evaluate`, `browser_run_code_unsafe`, file upload, drop, storage and cookies, route and network mocking, devtools, tracing and video, PDF, mouse by coordinates, the testing `verify_*` tools and config.
+- The server runs one browser per session, so the orchestrator allows only one browser-using agent at a time and puts `PLAYWRIGHT: off` in the other briefs when they run in parallel.
+
+Known gaps (defense in depth, not a sandbox):
+
+- `.mcp.json` can still change through git operations (checkout, merge, pull, apply, patch). Claude Code asks you to approve project-scoped `.mcp.json` servers unless `enableAllProjectMcpServers` is set; do not set it.
+- If `CLAUDE_CONFIG_DIR` is set, the config file at `$CLAUDE_CONFIG_DIR/.claude.json` is not covered by the guards.
+- Loopback is not a trust boundary: navigation, forms and page JavaScript can reach any local service on any port (Jupyter, the Docker API, Ollama, admin UIs, IDE servers). Stop such services or keep them off loopback while agents browse.
+- Dev-server proxies and rewrites (Vite `server.proxy`, Next.js rewrites, webpack `devServer` proxy) forward browser traffic to remote hosts, an exfiltration route past the dead proxy.
+- WebRTC/STUN over UDP and DNS lookups may bypass the HTTP proxy (not mitigated in this release).
+- Agents with Bash can still drive a browser directly (`playwright-cli`, `npx playwright`, node): page JavaScript evaluation, any host, no MCP hook. The `playwright-cli` route of the `browser-verification` skill has only an origin guard and no proxy, so HTTP redirects can escape.
+- The built-in general-purpose, Explore and Plan subagents and non-orchestrator main sessions inherit all tools, including the 19 Playwright tools.
+- The per-agent split relies on Claude Code enforcing `tools:` lists.
+- The hook cannot see the server's flags: if you register the server without the proxy, `--isolated` or `--no-webmcp`, only the hook remains. Agents are blocked from re-registering it, but your own edits are not checked.
+- A local process could start listening on port 9 between the check and the request (race); the hook checks on every call.
+- Output-dir contents (screenshots, snapshots, console logs, possibly downloads) persist in `$HOME/.cache/playwright-mcp` and may hold sensitive page data; clean it periodically.
+- The server is pre-1.0: a renamed tool stops working until the hook and `tests/lint.py` are updated, and a new tool or argument stays blocked by default-deny.
+- `npx -y @playwright/mcp@0.0.85` pins only the top-level package; transitive npm dependencies are not locked.
+- A GET on localhost can still change app state, even for the observe-only `code-reviewer`.
+- Page text can carry prompt injection; agents treat it as data, which is advisory only.
+- Key matching is ASCII-lowercase name matching, so any key ending in `file` and similar is a file key and may cause false denials.
+
+Uninstall: `claude mcp remove playwright --scope user`. The hook and deny entries stay in `~/.claude/settings.json` until you delete them by hand, because `install.sh` never removes entries.
+
 ## Optional browser verification
 
-The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it the agent reports that the UI was not rendered.
+The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. When the Playwright MCP server above is registered, the skill uses it first for navigation, snapshots, screenshots, console and interaction. `playwright-cli` remains for the checks that need page JavaScript evaluation (reduced motion, WebGL renderer, frame rate) and as the fallback when the MCP tools are absent. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it, and without the MCP server, the agent reports that the UI was not rendered.
 
 ## Optional git automation
 
@@ -202,7 +258,7 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 - Clean environment, for every row: the script re-runs itself through `env -i` under `bash -p`, keeping only an allowlist: `USER`, `LOGNAME`, locale (`LANG`, `LC_*`), `TERM`, `TMPDIR`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, proxy variables, `GH_TOKEN`/`GITHUB_TOKEN`, `CLAUDE_CODE_REMOTE`, `GIT_CEILING_DIRECTORIES` and the cloud CA variables. Exported shell functions, `BASH_ENV`, trace and debug variables and any other variable from the caller do not reach `gh` or `git`. `TMPDIR` must be an absolute path. `XDG_RUNTIME_DIR` is kept only if it is exactly `/run/user/<uid>`, a directory owned by you that group and others cannot write, and `DBUS_SESSION_BUS_ADDRESS` only if it is exactly `unix:path=<that directory>/bus` (optionally `,guid=<hex>`); any other value is dropped (on macOS both are always dropped, which `osxkeychain` does not need). Running the script as `bash -s`, `bash < script` or `bash -c "$(cat script)"` is refused with "run the script by its path".
 - The check that refuses a global `insteadOf`/`pushInsteadOf` rule that would rewrite the registered URL again now runs in every preflight (`plan`, `push`, `pr`, `merge`) and in `enable`, before any network call, not only at push time. On the local backend, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `CURL_CA_BUNDLE` are always dropped, so a TLS-inspecting corporate proxy that needs them does not work here. `core.askPass` is forced empty, so `SSH_ASKPASS` and any configured askpass program are never run; credentials must come from ssh-agent or a credential helper.
 - The guards are a best-effort regex layer. They stop accidents and common command forms from careless or injected agents, and known forms can still get through. They are not a boundary against code run deliberately under your OS user. A deliberately evasive agent can still bypass the guards and grant itself a level, because regex cannot close this. Repositories at level `merge` therefore need branch protection with required status checks. To search for guarded text, use the Grep tool or a plain leading `grep`.
-- The hooks fail closed: `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh` and `guard-mcp-serena.sh` block when `jq` is missing or their input JSON is malformed. `guard-bash.sh` also blocks `curl -o`, `wget -O` or `-P`, `tar -x -C`, `unzip -d`, `git checkout`, `git restore` and `patch` that target a project's `.claude/hooks`, `.claude/settings*.json`, `.claude/rules` or `.claude/agents`; top-level `agents/` and `skills/` directories are not affected. Known gaps: `git apply`, `patch -p0 < file` and interpreter writes.
+- The hooks fail closed: `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `guard-mcp-serena.sh` and `guard-mcp-playwright.sh` block when `jq` is missing or their input JSON is malformed (`guard-mcp-playwright.sh` also needs `lsof` unless bash has `/dev/tcp`; see the Playwright section). `guard-bash.sh` also blocks `claude mcp add|add-json|add-from-claude-desktop|remove|reset-project-choices` and shell writes to `~/.claude.json` and any `.mcp.json`; `guard-write.sh` blocks Edit and Write on the same two files, so MCP servers are registered by you, not by agents. The literal text `claude mcp add` in a Bash command is blocked too (same trade-off as the git push rule). The rule also covers `claude-code`, `npx`/`bunx`/`pnpm dlx` launchers, a command variable or substitution before `mcp add`, `xargs claude`, and `>|` redirects to these files; evasive forms are best-effort only. `guard-bash.sh` also blocks `curl -o`, `wget -O` or `-P`, `tar -x -C`, `unzip -d`, `git checkout`, `git restore` and `patch` that target a project's `.claude/hooks`, `.claude/settings*.json`, `.claude/rules` or `.claude/agents`; top-level `agents/` and `skills/` directories are not affected. Known gaps: `git apply`, `patch -p0 < file` and interpreter writes.
 - Blocked for all projects: direct `gh pr create|new|ready|edit|merge`, `gh api` writes, `gh repo create|sync`, `gh release upload|edit`, `gh workflow run`, `gh secret set`, `gh extension install`, `gh auth token`, `git credential fill`, and agent writes to `~/.gitconfig` and `~/.claude/hooks`. `gh pr comment|close` and `gh issue` stay allowed.
 - Check it with `bash tests/test-git-publish.sh`.
 
