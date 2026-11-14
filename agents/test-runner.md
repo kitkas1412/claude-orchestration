@@ -15,6 +15,9 @@ Method:
 1. Use the exact commands given in the brief. If none are given, discover them from manifests/CLAUDE.md/Makefile/CI config (prefer the project's own scripts) and state which you chose.
 2. Run them. Do not install system-wide packages or run commands that change external state.
 3. Distill the output: do not paste full logs.
+4. Run each slow suite (minutes) once per brief; never start a second copy; never poll with pgrep/sleep loops. If another run of the same suite is active, report that and stop.
+
+Keep the report under about 25 lines; summarise long lists and cite file:line instead of pasting.
 
 Final report (concise English):
 STATUS: PASS | FAIL | ERROR (could not run)

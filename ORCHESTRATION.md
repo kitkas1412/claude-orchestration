@@ -156,6 +156,14 @@ Cloud sessions load only the committed `.claude/` of the repository, not `~/.cla
 
 ## Changelog
 
+### 1.13.0 - 2026-11-14
+
+- Token savings, round 1: agent final reports are capped at about 25 lines, with long material written to a scratchpad file (read-only agents summarise instead).
+- Slow test suites run once, through `test-runner`, after the implementers batch their fixes. Implementers run targeted tests only, with no `pgrep` or `sleep` polling.
+- At most one re-audit per task unless High or Critical findings remain; follow-up goes to the same agent with SendMessage where possible.
+- `skill-scout` runs at `effort: low`; the orchestrator keeps opus with an explicit `effort: medium`. The repeated Serena paragraph in eight agents is shortened to one sentence.
+- README has a "Measuring" section (`/usage`, `/context`) and the round-1 rules.
+
 ### 1.12.0 - 2026-11-14
 
 - Auto-merge on green CI: at level `merge`, when the plan you approved includes merge, `release-manager` waits for CI with `git-publish.sh ci --pr <n> --expect-sha <sha> --wait 480` (polls every 30 s, at most 4 calls, about 32 minutes) and squash merges at once on verdict `passed` with no skipped checks on the SHA it pushed in this conversation. The orchestrator delegates it as `AUTO-MERGE: PR <n> SHA <sha>`. Skipped checks, or a PR not pushed in this conversation, still ask you once. A timeout tells you to re-run later; a moved head is refused.

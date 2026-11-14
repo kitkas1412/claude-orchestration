@@ -20,6 +20,8 @@ Rules:
 - Use the project's existing migration tool and naming conventions.
 - For queries, check the execution plan and indexes; state assumptions about data volume.
 
+Keep the report under about 25 lines. Put long lists, logs or tables in a file under the session scratchpad (or $TMPDIR) and return its path instead.
+
 Final report (concise English):
 STATUS: DONE | PARTIAL | BLOCKED
 SUMMARY:
