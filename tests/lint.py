@@ -6,6 +6,19 @@ ROOT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os
 HOME = os.path.expanduser('~')
 TOOLS = {'Agent', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash', 'WebSearch', 'WebFetch', 'AskUserQuestion', 'SendMessage', 'EnterWorktree', 'ExitWorktree'}
 WORKTREE_TOOLS = {'EnterWorktree', 'ExitWorktree'}
+SERENA_TOOLS = {'mcp__serena__' + n for n in ('find_symbol', 'find_referencing_symbols', 'get_symbols_overview', 'find_implementations')}
+SERENA_AGENTS = {'explorer', 'architect', 'code-reviewer', 'security-auditor', 'debugger', 'implementer', 'test-writer', 'performance-optimizer'}
+SERENA_DENIED = (
+    'find_declaration', 'get_diagnostics_for_file', 'get_diagnostics_for_symbol', 'restart_language_server',
+    'replace_symbol_body', 'insert_after_symbol', 'insert_before_symbol', 'rename_symbol', 'safe_delete_symbol',
+    'read_file', 'find_file', 'list_dir', 'search_for_pattern', 'create_text_file', 'replace_content', 'replace_in_files',
+    'delete_lines', 'insert_at_line', 'replace_lines', 'execute_shell_command',
+    'list_memories', 'read_memory', 'write_memory', 'edit_memory', 'rename_memory', 'delete_memory',
+    'onboarding', 'check_onboarding_performed', 'initial_instructions', 'serena_info',
+    'activate_project', 'get_current_config', 'open_dashboard', 'remove_project', 'query_project', 'list_queryable_projects', 'serena_repl',
+    'jet_brains_move', 'jet_brains_safe_delete', 'jet_brains_rename', 'jet_brains_debug', 'jet_brains_run_inspections', 'jet_brains_list_inspections',
+)
+SERENA_DENY_PATHS = ('Edit(./.serena/**)', 'Write(./.serena/**)', 'Edit(**/.serena/**)', 'Write(**/.serena/**)')
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -46,8 +59,15 @@ for f in agents:
         errors.append('%s: description lacks Use/Does NOT' % f)
     if len(desc) > 400:
         warnings.append('%s: long description (%d)' % (f, len(desc)))
-    for t in [x.strip() for x in str(d.get('tools', '')).split(',')]:
-        if t not in TOOLS:
+    listed = [x.strip() for x in str(d.get('tools', '')).split(',')]
+    if f[:-3] in SERENA_AGENTS:
+        for t in sorted(SERENA_TOOLS - set(listed)):
+            errors.append('%s: missing tool %s' % (f, t))
+    for t in listed:
+        if t in SERENA_TOOLS:
+            if f[:-3] not in SERENA_AGENTS:
+                errors.append('%s: Serena tools are only for the read-only code agents' % f)
+        elif t not in TOOLS:
             errors.append('%s: unknown tool %s' % (f, t))
         elif t in WORKTREE_TOOLS and f != 'orchestrator.md':
             errors.append('%s: %s is orchestrator-only' % (f, t))
@@ -73,6 +93,37 @@ for f in agents:
                     errors.append('%s: missing hook %s' % (f, name))
     if f != 'orchestrator.md' and 'Final report' not in body:
         errors.append('%s: no output contract' % f)
+
+for sf in ('settings.managed.json', 'project/settings.project.json'):
+    sp = '%s/%s' % (ROOT, sf)
+    if not os.path.isfile(sp):
+        continue
+    deny = json.load(open(sp, encoding='utf-8')).get('permissions', {}).get('deny', [])
+    for n in SERENA_DENIED:
+        if 'mcp__serena__' + n not in deny:
+            errors.append('%s: deny list lacks mcp__serena__%s' % (sf, n))
+    for p in SERENA_DENY_PATHS:
+        if p not in deny:
+            errors.append('%s: deny list lacks %s' % (sf, p))
+    if 'mcp__serena' in deny or 'mcp__serena__*' in deny:
+        errors.append('%s: must not deny the whole serena server' % sf)
+    for t in sorted(SERENA_TOOLS & set(deny)):
+        errors.append('%s: denies allowed tool %s' % (sf, t))
+
+sp = ROOT + '/settings.managed.json'
+if os.path.isfile(sp):
+    pre = json.load(open(sp, encoding='utf-8')).get('hooks', {}).get('PreToolUse', [])
+    if not any(g.get('matcher') == 'mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*' and any(h.get('command', '').endswith('/guard-mcp-serena.sh') for h in g.get('hooks', [])) for g in pre):
+        errors.append('settings.managed.json: guard-mcp-serena.sh not registered with matcher mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*')
+    if not pre or not any(h.get('command', '').endswith('/filter-test-output.sh') for h in pre[-1].get('hooks', [])):
+        errors.append('settings.managed.json: filter-test-output.sh must be the last PreToolUse entry')
+hp = ROOT + '/hooks/guard-mcp-serena.sh'
+if not os.path.isfile(hp):
+    errors.append('hooks/guard-mcp-serena.sh missing')
+else:
+    m = re.search(r'^case "\$\{TOOL#mcp__serena__\}" in\n\s*([a-z_|]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
+    if not m or {'mcp__serena__' + n for n in m.group(1).split('|')} != SERENA_TOOLS:
+        errors.append('hooks/guard-mcp-serena.sh: allowlist differs from SERENA_TOOLS')
 
 skills = sorted(os.listdir(ROOT + '/skills'))
 for s in skills:

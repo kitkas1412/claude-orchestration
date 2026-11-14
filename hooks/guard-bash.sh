@@ -162,6 +162,13 @@ while IFS= read -r seg; do
     fi
   fi
   pseg_has ">[[:space:]]*([^[:space:]]*/)?${PNAME}${PEND}"               && deny "write to project .claude hooks or settings"
+  # Serena trusts <project>/.serena/project.yml (prompt injection, language server paths): agents never write it.
+  SNAME='\.serena(/[^[:space:]]*)?'
+  pseg_has ">[[:space:]]*([^[:space:]]*/)?\.serena([/[:space:])\`]|$)"   && deny "write to .serena"
+  if pseg_has "(^|[[:space:]=>(\`]|/)\.serena([/[:space:])\`]|$)"; then
+    cmdseg_has "$WRITER"                                                  && deny "write to .serena"
+    cmdseg_has "$COPIER" && pseg_has "(^|[[:space:]=>(\`]|/)${SNAME}[)\`]*[[:space:]]*$|[[:space:]](-t|--target-directory)[=[:space:]]*([^[:space:]]*/)?\.serena([/[:space:])\`]|$)" && deny "write to .serena"
+  fi
   if pseg_has "$PROJ"; then
     cmdseg_has "$WRITER"                                                  && deny "write to project .claude hooks or settings"
     cmdseg_has "$COPIER" && pseg_has "$PROJ_DEST"                         && deny "write to project .claude hooks or settings"

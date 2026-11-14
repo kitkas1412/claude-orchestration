@@ -42,7 +42,54 @@
       "Edit(~/.claude/git-publish.registry)",
       "Edit(~/.claude/hooks/**)",
       "Edit(~/.gitconfig)",
-      "Edit(~/.config/git/config)"
+      "Edit(~/.config/git/config)",
+      "mcp__serena__replace_symbol_body",
+      "mcp__serena__insert_after_symbol",
+      "mcp__serena__insert_before_symbol",
+      "mcp__serena__rename_symbol",
+      "mcp__serena__safe_delete_symbol",
+      "mcp__serena__read_file",
+      "mcp__serena__find_file",
+      "mcp__serena__list_dir",
+      "mcp__serena__search_for_pattern",
+      "mcp__serena__create_text_file",
+      "mcp__serena__replace_content",
+      "mcp__serena__replace_in_files",
+      "mcp__serena__delete_lines",
+      "mcp__serena__insert_at_line",
+      "mcp__serena__replace_lines",
+      "mcp__serena__execute_shell_command",
+      "mcp__serena__list_memories",
+      "mcp__serena__read_memory",
+      "mcp__serena__write_memory",
+      "mcp__serena__edit_memory",
+      "mcp__serena__rename_memory",
+      "mcp__serena__delete_memory",
+      "mcp__serena__onboarding",
+      "mcp__serena__activate_project",
+      "mcp__serena__remove_project",
+      "mcp__serena__open_dashboard",
+      "mcp__serena__query_project",
+      "mcp__serena__list_queryable_projects",
+      "mcp__serena__serena_repl",
+      "mcp__serena__find_declaration",
+      "mcp__serena__get_diagnostics_for_file",
+      "mcp__serena__get_diagnostics_for_symbol",
+      "mcp__serena__jet_brains_move",
+      "mcp__serena__jet_brains_safe_delete",
+      "mcp__serena__jet_brains_rename",
+      "mcp__serena__jet_brains_debug",
+      "mcp__serena__jet_brains_run_inspections",
+      "mcp__serena__jet_brains_list_inspections",
+      "mcp__serena__check_onboarding_performed",
+      "mcp__serena__restart_language_server",
+      "mcp__serena__initial_instructions",
+      "mcp__serena__serena_info",
+      "mcp__serena__get_current_config",
+      "Edit(./.serena/**)",
+      "Write(./.serena/**)",
+      "Edit(**/.serena/**)",
+      "Write(**/.serena/**)"
     ],
     "defaultMode": "auto"
   },
@@ -63,6 +110,15 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/guard-write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/guard-mcp-serena.sh"
           }
         ]
       },

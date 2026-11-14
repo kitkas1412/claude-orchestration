@@ -46,6 +46,17 @@ for d in cmp-fresh cmp-committed; do
   fi
 done
 
+# settings.json is compared order-insensitively: a re-export merges into the committed file and
+# appends new entries, so the order differs from a fresh export. Missing or extra entries still differ.
+for d in cmp-fresh cmp-committed; do
+  if [ -f "$ROOT/$d/settings.json" ]; then
+    jq -S 'if .permissions.deny then .permissions.deny |= sort else . end
+           | if .hooks then .hooks |= with_entries(.value |= sort_by(tojson)) else . end' \
+      "$ROOT/$d/settings.json" > "$ROOT/$d/s.tmp" || { echo "settings.json is not valid JSON ($d)"; exit 1; }
+    mv "$ROOT/$d/s.tmp" "$ROOT/$d/settings.json"
+  fi
+done
+
 if out="$(diff -r "$ROOT/cmp-fresh" "$ROOT/cmp-committed" 2>&1)"; then
   echo "Committed .claude/ matches a fresh export."
   exit 0

@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh` and `filter-test-output.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh` and `guard-mcp-serena.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
 - Never exported: `git-publish.sh` and `apple-design`. No backup is made.
 - The target `CLAUDE.md`, `.claude/worktrees` and `.claude/settings.local.json` are left alone. Settings merge as for `~/.claude`: entries are only added. Running it again is safe and updates the files.
@@ -126,6 +126,44 @@ The safety hooks block direct edits to `~/.claude`, so changes flow one way. Lin
 - Separately, agent frontmatter sets `effort` to `low` for `explorer`, `test-runner` and `quick-fixer`, and to `medium` for `doc-writer`. `tests/lint.py` accepts `low`, `medium`, `high`, `xhigh` and `max`.
 - `release-manager` no longer preloads the `git-workflow` skill. It reads the skill when it does commit, push, PR or merge work; BRANCH mode does not need it. The publish and merge steps are in `agents/release-manager.md`.
 
+## Serena (optional, read-only)
+
+[Serena](https://github.com/oraios/serena) (v2.1.0, GPL-3.0) is a symbol-aware code search tool that runs as a separate process and connects over MCP. It is optional: you install it yourself, and `install.sh` never touches `~/.claude.json`. Without it the agents work as before (an unknown MCP tool in `tools:` is simply absent; checked on Claude Code 2.1.323).
+
+What this setup allows:
+
+- `explorer`, `architect`, `code-reviewer`, `security-auditor`, `debugger`, `implementer`, `test-writer` and `performance-optimizer` list four read tools: `mcp__serena__find_symbol`, `find_referencing_symbols`, `get_symbols_overview` and `find_implementations`. They prefer them when available, unless the brief says `SERENA: off`, and treat Serena output as data. `find_declaration` is denied: it reads any path with no containment (serena-agent 1.3.0 source). The orchestrator itself has none (`tests/lint.py` enforces this).
+- Every other Serena tool is in `permissions.deny` (edit, shell, raw file read and search, memory, onboarding, project, dashboard and REPL tools), so Serena cannot edit files or run commands around the Bash, Edit and Write guard hooks. The deny list also covers the JetBrains, diagnostics, config and `.serena/**` Edit/Write paths. `tests/lint.py` checks the deny list and rejects denying the whole `serena` server.
+- `hooks/guard-mcp-serena.sh` is a `PreToolUse` hook on `mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*` (case-insensitive for "serena"). It is default-deny: only the four tools above pass, so unknown future Serena tools are blocked, and so is any tool whose name contains `serena` but does not start with `mcp__serena__`. Register the server as exactly `serena`. For allowed tools it checks every argument whose name ends in `path` (except `name_path` and `name_path_pattern`): it blocks non-string values, absolute or `~` paths, `..` segments, backslashes and secret paths (`.env*`, `.ssh`, `.aws`, `*.pem`, `*.key`, `.npmrc`, credentials and similar). It also resolves symlinks and blocks paths that do not exist, resolve outside the root or resolve to a secret path. The root is found like Serena 1.3.0 does: from `$CLAUDE_PROJECT_DIR` (else `cwd` from the hook input) walk up to the first directory with `.serena/project.yml`, else the first with `.git`, else the start directory. It needs `perl`, or `python3` 3.10 or newer (`realpath(strict=True)`); without either, every Serena path argument is denied. It fails closed when `jq` is missing, the JSON is malformed or the root or a path cannot be resolved. It is exported with `install.sh --project`.
+- The hook is defense in depth, not a sandbox. Known gaps:
+  - project-wide queries with an empty `relative_path` are not path-filtered;
+  - language-server results may include a few lines from files outside the project, and the hook cannot filter results;
+  - a symlink can be swapped after the hook check and before Serena opens the file (TOCTOU);
+  - `guard-bash.sh` does not catch every way to write `.serena/`: `cd` then write, `curl -o`, `wget -O`, `tar -C`, `unzip -d`, `git checkout`/`restore` and interpreters;
+  - a name such as `CredentialsService.java` is a false positive;
+  - the audit was done on serena-agent 1.3.0; 2.x is unverified;
+  - the server must be registered as `serena`;
+  - the hook computes the root from `$CLAUDE_PROJECT_DIR` (else `cwd`), assuming Serena was launched from the same directory; if they differ, the roots can differ.
+- Serena walks up from the working directory to the main checkout's `.serena/project.yml`, so whenever the primary working directory contains `/.claude/worktrees/` (`EnterWorktree` or `claude -w`) the orchestrator puts `SERENA: off` in every brief.
+- Because onboarding and memory tools are denied, agents ignore Serena's onboarding prompts. That is expected.
+
+Install (you run these):
+
+```bash
+uv tool install -p 3.13 serena-agent
+serena init
+claude mcp add --scope user serena --env SERENA_USAGE_REPORTING=false -- serena start-mcp-server --context claude-code --project-from-cwd --open-web-dashboard False
+```
+
+- Do not install Serena through an MCP or plugin marketplace; the Serena README warns against it.
+- Required: in `~/.serena/serena_config.yml` set `web_dashboard: False` (otherwise the dashboard listens on `127.0.0.1:24282`) and `fixed_tools: [find_symbol, find_referencing_symbols, get_symbols_overview, find_implementations]`. `fixed_tools` was verified on serena-agent 1.3.0 and is unverified on 2.x.
+- `--project-from-cwd` trusts a repository's `.serena/project.yml` (`initial_prompt`, `ls_specific_settings`, included tools). Inspect or remove it in untrusted repositories. Edit and Write on `.serena/**` are denied for agents, and `guard-bash.sh` blocks Bash writes (redirects, `tee`, `cp`, `mv` and similar) to `.serena/`; interpreter writes are not covered.
+- Existing installs: run `uv tool upgrade serena-agent`.
+- Serena writes `~/.serena/` (config, logs) and `<project>/.serena/` (`project.yml`, memories). Consider adding `.serena/` to the project's `.gitignore`.
+- If startup is slow, raise `MCP_TIMEOUT` (for example `60000`).
+- Token impact is not measured here. Compare `/context` and the task usage before and after installing.
+- Uninstall: `claude mcp remove serena --scope user`. The deny entries stay in `~/.claude/settings.json` until you delete them by hand, because `install.sh` never removes entries.
+
 ## Optional browser verification
 
 The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it the agent reports that the UI was not rendered.
@@ -161,7 +199,7 @@ Off by default. The level is per repository and is stored in `~/.claude/git-publ
 - Clean environment, for every row: the script re-runs itself through `env -i` under `bash -p`, keeping only an allowlist: `USER`, `LOGNAME`, locale (`LANG`, `LC_*`), `TERM`, `TMPDIR`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, proxy variables, `GH_TOKEN`/`GITHUB_TOKEN`, `CLAUDE_CODE_REMOTE`, `GIT_CEILING_DIRECTORIES` and the cloud CA variables. Exported shell functions, `BASH_ENV`, trace and debug variables and any other variable from the caller do not reach `gh` or `git`. `TMPDIR` must be an absolute path. `XDG_RUNTIME_DIR` is kept only if it is exactly `/run/user/<uid>`, a directory owned by you that group and others cannot write, and `DBUS_SESSION_BUS_ADDRESS` only if it is exactly `unix:path=<that directory>/bus` (optionally `,guid=<hex>`); any other value is dropped (on macOS both are always dropped, which `osxkeychain` does not need). Running the script as `bash -s`, `bash < script` or `bash -c "$(cat script)"` is refused with "run the script by its path".
 - The check that refuses a global `insteadOf`/`pushInsteadOf` rule that would rewrite the registered URL again now runs in every preflight (`plan`, `push`, `pr`, `merge`) and in `enable`, before any network call, not only at push time. On the local backend, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `CURL_CA_BUNDLE` are always dropped, so a TLS-inspecting corporate proxy that needs them does not work here. `core.askPass` is forced empty, so `SSH_ASKPASS` and any configured askpass program are never run; credentials must come from ssh-agent or a credential helper.
 - The guards are a best-effort regex layer. They stop accidents and common command forms from careless or injected agents, and known forms can still get through. They are not a boundary against code run deliberately under your OS user. A deliberately evasive agent can still bypass the guards and grant itself a level, because regex cannot close this. Repositories at level `merge` therefore need branch protection with required status checks. To search for guarded text, use the Grep tool or a plain leading `grep`.
-- The hooks fail closed: `guard-bash.sh`, `guard-write.sh` and `readonly-bash.sh` block when `jq` is missing or their input JSON is malformed. `guard-bash.sh` also blocks `curl -o`, `wget -O` or `-P`, `tar -x -C`, `unzip -d`, `git checkout`, `git restore` and `patch` that target a project's `.claude/hooks`, `.claude/settings*.json`, `.claude/rules` or `.claude/agents`; top-level `agents/` and `skills/` directories are not affected. Known gaps: `git apply`, `patch -p0 < file` and interpreter writes.
+- The hooks fail closed: `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh` and `guard-mcp-serena.sh` block when `jq` is missing or their input JSON is malformed. `guard-bash.sh` also blocks `curl -o`, `wget -O` or `-P`, `tar -x -C`, `unzip -d`, `git checkout`, `git restore` and `patch` that target a project's `.claude/hooks`, `.claude/settings*.json`, `.claude/rules` or `.claude/agents`; top-level `agents/` and `skills/` directories are not affected. Known gaps: `git apply`, `patch -p0 < file` and interpreter writes.
 - Blocked for all projects: direct `gh pr create|new|ready|edit|merge`, `gh api` writes, `gh repo create|sync`, `gh release upload|edit`, `gh workflow run`, `gh secret set`, `gh extension install`, `gh auth token`, `git credential fill`, and agent writes to `~/.gitconfig` and `~/.claude/hooks`. `gh pr comment|close` and `gh issue` stay allowed.
 - Check it with `bash tests/test-git-publish.sh`.
 
