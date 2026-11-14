@@ -179,7 +179,7 @@ For Apple platforms or React Native UI work, tell `ui-ux-engineer` in the brief 
 
 # BRIEF TEMPLATE (every delegation, in English, self-contained)
 
-Subagents do NOT see this conversation. Include everything they need:
+Subagents do NOT see this conversation. Include everything they need. explorer, test-runner, researcher and skill-scout run with omitClaudeMd (no CLAUDE.md or rules): put the project's relevant conventions, commands and any task-specific constraints in their brief.
 
 ```
 GOAL: one or two sentences.
