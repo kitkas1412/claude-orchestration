@@ -730,6 +730,40 @@ checks 2 $SF '{"relative_path":"link_out/secret-target.txt"}'
 checks 2 $SF '{"relative_path":"link_file_out"}'
 checks 0 $SF '{"relative_path":"link_ok"}'
 checks 2 $SF '{"relative_path":"link_secret"}'
+# absolute paths: allowed only when they exist and resolve to the root or below
+mkdir -p "$SROOT/certs"; touch "$SROOT/certs/server.pem"
+ln -s "$SOUT" "$SROOT/abs_link_out"
+abs() { jq -nc --arg p "$1" '{relative_path:$p}'; }
+checks 0 $SF "$(abs "$SROOT/src/app.py")"
+checks 0 $SF "$(abs "$SROOT")"
+checks 0 $SF "$(abs "$SROOT/src")"
+checks 2 $SF "$(abs "$SOUT/secret-target.txt")"
+checks 2 $SF "$(abs "$SROOT/src/not-yet-created.py")"
+checks 2 $SF "$(abs "$SROOT/abs_link_out")"
+# sibling whose name starts with the root's name: the prefix check must compare "root/", not "root"
+SSIB="$SROOT-sib"; mkdir "$SSIB"; touch "$SSIB/f.txt"
+checks 2 $SF "$(abs "$SSIB/f.txt")"
+checks 2 $SF "$(abs "$SROOT/abs_link_out/secret-target.txt")"
+checks 2 $SF "$(abs "$SROOT/certs/server.pem")"
+checks 2 $SF "$(abs "$SROOT/src/../src/app.py")"
+checks 2 $SF '{"relative_path":"/tmp/x\\y"}'
+checks 2 $SF '{"relative_path":"~/x"}'
+checks 2 $SF '{"relative_path":"/etc/passwd"}'
+# macOS: /tmp is a symlink to /private/tmp, and both spellings of the root must work
+if [ "$(uname -s)" = Darwin ] && [ -d /private/tmp ]; then
+  SMAC=$(mktemp -d /private/tmp/serena-hook-test.XXXXXX)
+  mkdir "$SMAC/.git"; touch "$SMAC/f.txt"
+  SMACB=/tmp/${SMAC#/private/tmp/}
+  SPD=$SMACB
+  checks 0 $SF '{"relative_path":"f.txt"}'
+  checks 0 $SF "$(abs "$SMACB/f.txt")"
+  checks 0 $SF "$(abs "$SMAC/f.txt")"
+  SPD=$SMAC
+  checks 0 $SF "$(abs "$SMACB/f.txt")"
+  SPD=$SROOT
+else
+  echo "skip  [guard-mcp-serena.sh] not macOS; /tmp vs /private/tmp cases not run"
+fi
 checks 2 $SF '{"relative_path":"src/not-yet-created.py"}'
 checks 2 $SF '{"relative_path":"newdir/newfile.py"}'
 checks 2 $SF '{"relative_path":"link_dangling"}'
@@ -828,7 +862,8 @@ for d in "$NOPY" "$NOPERL" "$NOPYT"; do
   rmdir "$d"
 done
 # fixture cleanup: only the dirs created above, only with the expected name
-for d in "$SROOT" "$SOUT" "$RA" "$RG" "$RF" "$RN" "$RW"; do
+for d in "$SROOT" "$SOUT" "$RA" "$RG" "$RF" "$RN" "$RW" "${SMAC:-}" "${SSIB:-}"; do
+  [ -n "$d" ] || continue
   case "$d" in */serena-hook-test.*) rm -rf "$d" ;; esac
 done
 

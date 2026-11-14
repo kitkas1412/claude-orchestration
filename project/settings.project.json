@@ -2,17 +2,11 @@
   "permissions": {
     "deny": [
       "Edit(./.claude/hooks/**)",
-      "Write(./.claude/hooks/**)",
       "Edit(./.claude/settings.json)",
-      "Write(./.claude/settings.json)",
       "Edit(./.claude/settings.local.json)",
-      "Write(./.claude/settings.local.json)",
       "Edit(./.claude/rules/**)",
-      "Write(./.claude/rules/**)",
       "Edit(./.claude/agents/**)",
-      "Write(./.claude/agents/**)",
       "Edit(./.claude/skills/**)",
-      "Write(./.claude/skills/**)",
       "mcp__serena__replace_symbol_body",
       "mcp__serena__insert_after_symbol",
       "mcp__serena__insert_before_symbol",
@@ -57,9 +51,7 @@
       "mcp__serena__serena_info",
       "mcp__serena__get_current_config",
       "Edit(./.serena/**)",
-      "Write(./.serena/**)",
-      "Edit(**/.serena/**)",
-      "Write(**/.serena/**)"
+      "Edit(**/.serena/**)"
     ]
   }
 }

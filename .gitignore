@@ -14,5 +14,6 @@
 !.claude/ORCHESTRATION.md
 !.claude/.orchestration-manifest
 node_modules/
+.serena/
 *.tgz
 *.local.md
