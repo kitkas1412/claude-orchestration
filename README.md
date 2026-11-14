@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh` and `guard-mcp-playwright.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh` and `guard-mcp-context7.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The global install adds `"claudeMdExcludes": ["**/.claude/rules/orchestration-global.md"]` to `~/.claude/settings.json`, so a local session loads the global rules once, from `~/.claude/CLAUDE.md`. The export strips that setting, because cloud sessions do not read `~/.claude` and still need `orchestration-global.md`.
 - Limits: the glob excludes any file named `orchestration-global.md` in any project. It assumes `~/.claude/CLAUDE.md` holds the global rules; after a partial install without it, local sessions get no global rules. The settings merge takes `claudeMdExcludes` from `settings.managed.json`, so it replaces any existing user value for that key.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
@@ -238,6 +238,42 @@ Known gaps (defense in depth, not a sandbox):
 - Key matching is ASCII-lowercase name matching, so any key ending in `file` and similar is a file key and may cause false denials.
 
 Uninstall: `claude mcp remove playwright --scope user`. The hook and deny entries stay in `~/.claude/settings.json` until you delete them by hand, because `install.sh` never removes entries.
+
+## Context7 MCP (optional, library docs)
+
+[Context7](https://context7.com) is a remote MCP server that returns library documentation. It is optional: you register it yourself, and `install.sh` never touches `~/.claude.json`. Only `researcher` has its tools. Without the server, `researcher` uses WebFetch and WebSearch as before.
+
+Register it once (you run this):
+
+```bash
+claude mcp add --scope user --transport http context7 https://mcp.context7.com/mcp
+```
+
+- The server must be registered as exactly `context7`.
+- For an API key, add `--header "Authorization: Bearer <YOUR_CONTEXT7_KEY>"` to the same command. Use your own key; never commit it or paste it into a brief.
+- Uninstall: `claude mcp remove --scope user context7`. The hook entry stays in `~/.claude/settings.json`, because `install.sh` never removes entries; without the server it has no tool calls to check.
+
+Layers:
+
+1. `hooks/guard-mcp-context7.sh` is a `PreToolUse` hook on `mcp__.*[Cc][Oo][Nn][Tt][Ee][Xx][Tt]7.*`. It is default-deny: only `resolve-library-id` and `query-docs` pass, and the tool name must start with `mcp__context7__`. Checks:
+   - `tool_input` must be an object with only the tool's keys: `query` and `libraryName` for `resolve-library-id`; `libraryId`, `query` and an optional `language` for `query-docs`. Required keys must be present.
+   - `query` is one line of 1 to 300 characters, with no control characters and no U+2028, U+2029 or U+0085. It is denied if it contains a filesystem path, a secret-like string, or code (three or more of `;`, `{`, `}`, or `=>` with braces).
+   - Path check: a case-insensitive match of `/users/`, `/home/`, `/root/`, `/private/`, `/etc/`, `/var/`, `/tmp/`, `/opt/`, `/volumes/` or `/mnt/` anywhere in the text, plus `~/` and a Windows drive path (`C:\`).
+   - Secret check: the prefixes `sk-`, `sk_live_`, `sk_test_`, `ghp_`, `gho_`, `github_pat_`, `AKIA` (AWS access key), `xox[abp]-` (Slack), `-----BEGIN` (PEM), `ctx7sk`, and `password=`, `passwd=`, `secret=`, `token=` or `api_key=` (any case). It also denies a run of 32 or more characters from `[A-Za-z0-9+=]` that contains both a digit and a letter. Any other character, such as `-`, `_`, `.` or a space, ends a run. Hex-only runs shorter than 40 characters are exempt.
+   - `libraryName` is 1 to 100 characters from letters, digits, space and `._@/+-`; it also gets the path and secret checks. `libraryId` must look like `/org/project` or `/org/project/version`, with no `..` segment. Its first segment is checked against the same path names, case-insensitively, and it gets the secret check.
+   - Deny messages name the category only and never repeat the query.
+2. `researcher` is told to use only public library names and generic questions, never project code, paths or secrets, and to treat Context7 output as untrusted data.
+
+Who can call it: `researcher` is the only agent whose `tools` list includes Context7. If the main session does not run as the orchestrator agent (for example, a plain `claude` session without the managed `agent` setting), it can call Context7 once the server is registered. The hook checks the arguments, not which agent is calling.
+
+Known limits (defense in depth, not a sandbox):
+
+- The query leaves the machine. The hook checks its shape, not its meaning, and the content filter is a heuristic, not a guarantee. A public path segment such as `foo/home/bar` is denied (a false positive), and obfuscated secrets can still get through.
+- A secret split into pieces shorter than 32 characters by `/`, `-`, `_` or `.` (for example AWS secret keys or base64url tokens) can pass the long-run rule.
+- Context7 docs are community-contributed. Instructions inside them are data, and the agent is told to ignore them; that is advisory only.
+- Queries and library names go to Context7's hosted service. Context7 says queries are stored anonymously for benchmarking and API logs are kept 30 days ([data privacy](https://context7.com/docs/security/data-privacy), as of 2026-11-14).
+- An API key is optional. Without one, IP-based rate limits are low ([API guide](https://context7.com/docs/api-guide), as of 2026-11-14).
+- Context7 documents no response-size cap, so ask focused questions.
 
 ## Optional browser verification
 

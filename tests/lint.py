@@ -46,6 +46,9 @@ PLAYWRIGHT_DENIED = (
     'browser_generate_locator', 'browser_verify_element_visible', 'browser_verify_list_visible', 'browser_verify_text_visible', 'browser_verify_value',
 )
 PLAYWRIGHT_MATCHER = 'mcp__.*([Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|__browser_).*'
+CONTEXT7_TOOLS = {'mcp__context7__resolve-library-id', 'mcp__context7__query-docs'}
+CONTEXT7_AGENTS = {'researcher'}
+CONTEXT7_MATCHER = 'mcp__.*[Cc][Oo][Nn][Tt][Ee][Xx][Tt]7.*'
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -93,10 +96,13 @@ for f in agents:
     pw = {t for t in listed if t.startswith('mcp__playwright__')}
     if pw != PLAYWRIGHT_AGENTS.get(f[:-3], set()):
         errors.append('%s: Playwright tools must be exactly %s' % (f, 'the agent set' if f[:-3] in PLAYWRIGHT_AGENTS else 'none (not a browser agent)'))
+    c7 = {t for t in listed if t.startswith('mcp__context7')}
+    if c7 != (CONTEXT7_TOOLS if f[:-3] in CONTEXT7_AGENTS else set()):
+        errors.append('%s: Context7 tools must be exactly %s' % (f, 'the two Context7 tools' if f[:-3] in CONTEXT7_AGENTS else 'none (researcher only)'))
     if 'mcpServers' in d:
         errors.append('%s: mcpServers frontmatter is not allowed' % f)
     for t in listed:
-        if t in PLAYWRIGHT_ALLOWED:
+        if t in PLAYWRIGHT_ALLOWED or t in CONTEXT7_TOOLS:
             pass
         elif t in SERENA_TOOLS:
             if f[:-3] not in SERENA_AGENTS:
@@ -161,6 +167,8 @@ if os.path.isfile(sp):
         errors.append('settings.managed.json: guard-mcp-serena.sh not registered with matcher mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*')
     if not any(g.get('matcher') == PLAYWRIGHT_MATCHER and any(h.get('command', '').endswith('/guard-mcp-playwright.sh') for h in g.get('hooks', [])) for g in pre):
         errors.append('settings.managed.json: guard-mcp-playwright.sh not registered with matcher ' + PLAYWRIGHT_MATCHER)
+    if not any(g.get('matcher') == CONTEXT7_MATCHER and any(h.get('command', '').endswith('/guard-mcp-context7.sh') for h in g.get('hooks', [])) for g in pre):
+        errors.append('settings.managed.json: guard-mcp-context7.sh not registered with matcher ' + CONTEXT7_MATCHER)
     if not pre or not any(h.get('command', '').endswith('/filter-test-output.sh') for h in pre[-1].get('hooks', [])):
         errors.append('settings.managed.json: filter-test-output.sh must be the last PreToolUse entry')
 hp = ROOT + '/hooks/guard-mcp-serena.sh'
@@ -177,6 +185,13 @@ else:
     m = re.search(r'^case "\$\{TOOL#mcp__playwright__\}" in\n\s*([a-z_|]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
     if not m or {'mcp__playwright__' + n for n in m.group(1).split('|')} != PLAYWRIGHT_ALLOWED:
         errors.append('hooks/guard-mcp-playwright.sh: allowlist differs from PLAYWRIGHT_OBSERVE | PLAYWRIGHT_INTERACT')
+hp = ROOT + '/hooks/guard-mcp-context7.sh'
+if not os.path.isfile(hp):
+    errors.append('hooks/guard-mcp-context7.sh missing')
+else:
+    m = re.search(r'^case "\$\{TOOL#mcp__context7__\}" in\n\s*([a-z_|-]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
+    if not m or {'mcp__context7__' + n for n in m.group(1).split('|')} != CONTEXT7_TOOLS:
+        errors.append('hooks/guard-mcp-context7.sh: allowlist differs from CONTEXT7_TOOLS')
 
 skills = sorted(os.listdir(ROOT + '/skills'))
 for s in skills:
