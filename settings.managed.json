@@ -186,6 +186,15 @@
         ]
       },
       {
+        "matcher": "mcp__.*[Cc][Oo][Nn][Tt][Ee][Xx][Tt]7.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/guard-mcp-context7.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {

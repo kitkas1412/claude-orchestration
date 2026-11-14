@@ -1081,6 +1081,208 @@ rm -f "$NOLSOF/jq" "$NOLSOF/cat" "$NOLSOF/tr"; rmdir "$NOLSOF"
 rm -f "$PWP/port" "$PWP/listen.sh" "$PWP/nodevtcp.sh"; rmdir "$PWP"
 rm -f "$PWSTUB/lsof"; rmdir "$PWSTUB"
 
+# ---- guard-mcp-context7.sh (allowlist of 2 Context7 tools; strict arg shapes; query content filter; fail closed) ----
+C7HOOK="$HOOKS/guard-mcp-context7.sh"
+c7_report() { # c7_report <want> <got> <stderr> <label> <query text or empty>
+  local want=$1 got=$2 err=$3 label=$4 q=$5
+  if [ "$got" = "$want" ] && { [ "$want" = 0 ] && [ -z "$err" ] || { [ "$want" != 0 ] && grep -q '^BLOCKED by guard-mcp-context7' <<<"$err" && { [ -z "$q" ] || ! grep -qF -- "$q" <<<"$err"; }; }; }; then
+    echo "ok    [guard-mcp-context7.sh] $label"
+  else
+    echo "FAIL  [guard-mcp-context7.sh] want=$want got=$got: $label stderr=$err"; fail=1
+  fi
+}
+c7() { # c7 <want exit> <tool name> <tool_input JSON>; a deny must print BLOCKED on stderr; an allow must print nothing
+  local want=$1 tool=$2 ti=$3 got err in
+  in=$(jq -n --arg t "$tool" --argjson i "$ti" '{tool_name:$t,tool_input:$i}') || { echo "FAIL  bad test JSON: $tool $ti"; fail=1; return; }
+  err=$(printf '%s' "$in" | "$C7HOOK" 2>&1 >/dev/null); got=$?
+  c7_report "$want" "$got" "$err" "$tool $ti" ""
+}
+c7q() { # c7q <want exit> <short tool> <query>: valid other args; a deny must not echo the query
+  local want=$1 short=$2 q=$3 in got err
+  if [ "$short" = resolve-library-id ]; then
+    in=$(jq -n --arg q "$q" '{tool_name:"mcp__context7__resolve-library-id",tool_input:{query:$q,libraryName:"react"}}')
+  else
+    in=$(jq -n --arg q "$q" '{tool_name:"mcp__context7__query-docs",tool_input:{libraryId:"/facebook/react",query:$q}}')
+  fi
+  err=$(printf '%s' "$in" | "$C7HOOK" 2>&1 >/dev/null); got=$?
+  c7_report "$want" "$got" "$err" "$short query=${q:0:60}" "$q"
+}
+c7_raw() { # c7_raw <want exit> <raw stdin>
+  local want=$1 input=$2 got err
+  err=$(printf '%s' "$input" | "$C7HOOK" 2>&1 >/dev/null); got=$?
+  c7_report "$want" "$got" "$err" "raw input: $input" ""
+}
+CR=mcp__context7__resolve-library-id
+CQ=mcp__context7__query-docs
+# allowed
+c7 0 $CR '{"query":"how to use hooks","libraryName":"react"}'
+c7 0 $CR '{"query":"routing","libraryName":"@scope/pkg-name.js c++"}'
+c7 0 $CQ '{"libraryId":"/facebook/react","query":"useEffect cleanup"}'
+c7 0 $CQ '{"libraryId":"/vercel/next.js/v14.3.0","query":"app router"}'
+c7 0 $CQ '{"libraryId":"/facebook/react","query":"hooks","language":"TypeScript"}'
+c7 0 $CQ '{"libraryId":"/facebook/react","query":"hooks","language":"C++ C# f#"}'
+c7 0 $CQ '{"libraryId":"/facebook/react","query":"hooks","language":""}'
+c7q 0 query-docs 'how does the task-runner handle multi-step, well-known retries?'
+c7q 0 query-docs 'what does the arrow => mean in a type annotation'
+c7q 0 query-docs 'use a { placeholder } in the template'
+c7q 0 query-docs 'a;b;c separators in a list'
+c7q 0 resolve-library-id 'x'
+c7q 0 query-docs "$(printf 'how to word %.0s' $(seq 1 30) | cut -c1-300)"
+c7q 0 resolve-library-id "$(printf 'ab %.0s' $(seq 1 100) | cut -c1-300)"
+# query length and shape boundaries
+c7q 2 query-docs ''
+c7q 2 resolve-library-id ''
+c7q 2 query-docs "$(printf 'ab %.0s' $(seq 1 101) | cut -c1-301)"
+c7q 2 query-docs $'first line\nsecond line'
+c7q 2 query-docs $'first line\rsecond line'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":42}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":["a"]}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":null}'
+# query: absolute paths
+c7q 2 query-docs 'read /Users/someone/project/file'
+c7q 2 query-docs 'look at /home/someone/x'
+c7q 2 query-docs 'dump /root/x'
+c7q 2 query-docs 'see /private/var/x'
+c7q 2 query-docs 'open /etc/hosts please'
+c7q 2 query-docs 'open ~/projects/x'
+c7q 2 query-docs 'open C:\Users\x'
+# query: secret-like content, built from parts so the repo secret scanner does not flag test data
+S1='sk-'; S2='ghp_'; S3='gho_'; S4='github_pat_'; S5='AKIA'; S6='xoxb-'; S7='xoxa-'; S8='xoxp-'; S9='-----BEG'; S10='ctx7'; S11='pass'
+c7q 2 query-docs "key ${S1}FAKEFAKEFAKE"
+S12='sk_'
+c7q 2 query-docs "key ${S12}live_FAKEFAKE"
+c7q 2 query-docs "key ${S12}test_FAKEFAKE"
+c7q 0 query-docs "how does task_live_view update"
+c7q 2 query-docs "key ${S2}FAKEFAKEFAKE"
+c7q 2 query-docs "key ${S3}FAKEFAKEFAKE"
+c7q 2 query-docs "key ${S4}FAKEFAKEFAKE"
+c7q 2 query-docs "id ${S5}FAKEFAKEFAKEFAKE"
+c7q 2 query-docs "tok ${S6}FAKEFAKE"
+c7q 2 query-docs "tok ${S7}FAKEFAKE"
+c7q 2 query-docs "tok ${S8}FAKEFAKE"
+c7q 2 query-docs "${S9}IN FAKE BLOCK"
+c7q 2 query-docs "${S10}sk-FAKEFAKE"
+c7q 2 query-docs "${S10}SK-FAKEFAKE"
+c7q 2 query-docs "${S11}word=FAKE"
+c7q 2 query-docs "PASSWORD = FAKE"
+c7q 2 query-docs "my secret=FAKE"
+c7q 2 query-docs "the Token=FAKE"
+c7q 2 query-docs "set Api_Key=FAKE"
+c7q 0 query-docs "blob $(printf 'a%.0s' $(seq 1 32))"
+c7q 0 query-docs "blob $(printf '0123456789abcdef%.0s' 1 2)"
+c7q 0 query-docs "blob $(printf 'a%.0s' $(seq 1 31))"
+c7q 0 query-docs "hex $(printf 'abcdef012345%.0s' 1 2 3)"
+c7q 0 query-docs 'AnnotationConfigApplicationContext and UICollectionViewDelegateFlowLayout'
+c7q 0 query-docs 'see /facebook/react/blob/main/packages/react'
+c7q 0 query-docs 'react/hooks and next.js/app router'
+c7q 2 query-docs "run $(printf 'z9%.0s' $(seq 1 16))"
+c7q 2 query-docs "run $(printf 'z9%.0s' $(seq 1 16))/path"
+c7q 2 query-docs "hex $(printf 'abcdef0123%.0s' 1 2 3 4)"
+# query: single-line control characters and Unicode line separators
+c7q 2 query-docs $'tab\tseparated'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"nul\u0000byte"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"ls sep"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"ps sep"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"nel\u0085sep"}'
+# query: case-insensitive and substring path words
+c7q 2 query-docs 'open /TMP/a'
+c7q 2 query-docs 'open /Volumes/a'
+c7q 2 query-docs 'open x/Users/a'
+c7q 2 query-docs 'open /var/log/x'
+c7q 2 query-docs 'open /opt/x'
+c7q 2 query-docs 'open /mnt/x'
+# libraryName path and secret (built from parts)
+c7 2 $CR '{"query":"q1","libraryName":"/etc/passwd"}'
+c7 2 $CR '{"query":"q1","libraryName":"x/Users/a"}'
+c7 2 $CR "{\"query\":\"q1\",\"libraryName\":\"${S5}FAKEFAKEFAKEFAKE\"}"
+c7 2 $CR "{\"query\":\"q1\",\"libraryName\":\"${S1}FAKEFAKEFAKE\"}"
+c7 0 $CR '{"query":"q1","libraryName":"AnnotationConfigApplicationContext"}'
+# libraryId path and secret
+c7 2 $CQ '{"libraryId":"/Users/x/y","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/HOME/a/b","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/tmp/a/b","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/Volumes/a","query":"q1"}'
+c7 2 $CQ "{\"libraryId\":\"/org/${S1}FAKEFAKEFAKE\",\"query\":\"q1\"}"
+c7 2 $CQ "{\"libraryId\":\"/org/$(printf 'z9%.0s' $(seq 1 16))\",\"query\":\"q1\"}"
+c7 0 $CQ '{"libraryId":"/facebook/react/v18.2.0","query":"q1"}'
+c7 0 $CQ '{"libraryId":"/org/users","query":"q1"}'
+# plugin-style server naming is not the exact server name
+c7 2 mcp__plugin_context7_context7__query-docs '{"libraryId":"/facebook/react","query":"q1"}'
+# query: code-like content
+c7q 2 query-docs 'if (a) { b; c; }'
+c7q 2 query-docs 'a; b; c;'
+c7q 2 query-docs 'const f = (x) => { return x }'
+c7q 2 query-docs 'f => }'
+# libraryName
+c7 2 $CR '{"query":"q1","libraryName":""}'
+c7 2 $CR "{\"query\":\"q1\",\"libraryName\":\"$(printf 'a%.0s' $(seq 1 101))\"}"
+c7 0 $CR "{\"query\":\"q1\",\"libraryName\":\"$(printf 'a%.0s' $(seq 1 100))\"}"
+c7 2 $CR '{"query":"q1","libraryName":"react; rm"}'
+c7 2 $CR '{"query":"q1","libraryName":"react\nvue"}'
+c7 2 $CR '{"query":"q1","libraryName":"re$act"}'
+c7 2 $CR '{"query":"q1","libraryName":5}'
+c7 2 $CR '{"query":"q1","libraryName":["react"]}'
+# libraryId
+c7 2 $CQ '{"libraryId":"facebook/react","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/facebook","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/a/b/c/d","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/facebook/react/","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/../react","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/facebook/..","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/facebook/react/..","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/face book/react","query":"q1"}'
+c7 2 $CQ '{"libraryId":"/facebook/react\n","query":"q1"}'
+c7 2 $CQ '{"libraryId":"","query":"q1"}'
+c7 2 $CQ '{"libraryId":7,"query":"q1"}'
+c7 2 $CQ '{"libraryId":["/facebook/react"],"query":"q1"}'
+# language
+c7 2 $CQ "{\"libraryId\":\"/facebook/react\",\"query\":\"q1\",\"language\":\"$(printf 'a%.0s' $(seq 1 41))\"}"
+c7 0 $CQ "{\"libraryId\":\"/facebook/react\",\"query\":\"q1\",\"language\":\"$(printf 'a%.0s' $(seq 1 40))\"}"
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","language":"js; rm"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","language":"js\nts"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","language":3}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","language":["js"]}'
+# missing required, extra and unknown keys
+c7 2 $CR '{"query":"q1"}'
+c7 2 $CR '{"libraryName":"react"}'
+c7 2 $CR '{}'
+c7 2 $CQ '{"libraryId":"/facebook/react"}'
+c7 2 $CQ '{"query":"q1"}'
+c7 2 $CR '{"query":"q1","libraryName":"react","extra":1}'
+c7 2 $CR '{"query":"q1","libraryName":"react","language":"js"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","tokens":5000}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","Language":"js"}'
+c7 2 $CQ '{"libraryId":"/facebook/react","query":"q1","libraryName":"react"}'
+c7_raw 2 '{"tool_name":"mcp__context7__query-docs"}'
+c7_raw 2 '{"tool_name":"mcp__context7__query-docs","tool_input":"str"}'
+c7_raw 2 '{"tool_name":"mcp__context7__query-docs","tool_input":[]}'
+c7_raw 2 '{"tool_name":"mcp__context7__query-docs","tool_input":null}'
+# server name and tool allowlist
+c7 2 mcp__Context7__query-docs '{"libraryId":"/facebook/react","query":"q1"}'
+c7 2 mcp__CONTEXT7__query-docs '{"libraryId":"/facebook/react","query":"q1"}'
+c7 2 mcp__my_context7__query-docs '{"libraryId":"/facebook/react","query":"q1"}'
+c7 2 mcp__context7_x__query-docs '{"libraryId":"/facebook/react","query":"q1"}'
+c7 2 mcp__context7__resolve-library-id-x '{"query":"q1","libraryName":"react"}'
+c7 2 mcp__context7__Query-Docs '{"libraryId":"/facebook/react","query":"q1"}'
+c7 2 mcp__context7__get-library-docs '{}'
+c7 2 mcp__context7__future-tool '{}'
+c7 2 mcp__context7__ '{}'
+c7 2 mcp__other__query-docs '{"libraryId":"/facebook/react","query":"q1"}'
+c7 2 Bash '{"command":"ls"}'
+# fail closed on bad input and missing jq
+c7_raw 2 ''
+c7_raw 2 '{bad json'
+c7_raw 2 '{"tool_name":'
+c7_raw 2 '{}'
+c7_raw 2 '{"tool_input":{}}'
+c7_raw 2 '{"tool_name":123}'
+c7_raw 2 '{"tool_name":null,"tool_input":{}}'
+c7_raw 0 '{"tool_name":"mcp__context7__query-docs","tool_input":{"libraryId":"/a/b","query":"q1"}}'
+NOJQ5=$(mktemp -d)
+printf '%s' '{"tool_name":"mcp__context7__query-docs","tool_input":{"libraryId":"/a/b","query":"q1"}}' | PATH="$NOJQ5" "$BASH_BIN" "$C7HOOK" >/dev/null 2>&1; got=$?
+if [ "$got" = 2 ]; then echo "ok    [guard-mcp-context7.sh] jq missing"; else echo "FAIL  [guard-mcp-context7.sh] jq missing: want=2 got=$got"; fail=1; fi
+rmdir "$NOJQ5"
+
 # ---- guard-bash.sh: claude mcp config mutation and MCP config file writes ----
 check guard-bash.sh 2 'claude mcp add foo -- npx foo'
 check guard-bash.sh 2 "claude mcp add-json foo '{}'"
