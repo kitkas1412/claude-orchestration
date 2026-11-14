@@ -701,7 +701,24 @@ cat >"$T/stubm/gh" <<'E'
 . "${0%/*}/stub.env"
 for a in "$@"; do printf '[%s] ' "$a"; done >>"$MS_DIR/gh.log"; echo >>"$MS_DIR/gh.log"
 case "$1 $2" in
-  "pr view") [ -e "$MS_DIR/fail.view" ] && { echo "stub view failure" >&2; exit 1; }; cat "$MS_DIR/pr.json" ;;
+  "pr view") [ -e "$MS_DIR/fail.view" ] && { echo "stub view failure" >&2; exit 1; }
+    # view.n counts calls. pr.json.N (N = call number) overrides pr.json; past the last one, the last repeats.
+    n=$(cat "$MS_DIR/view.n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$MS_DIR/view.n"
+    [ -e "$MS_DIR/fail.view.$n" ] && { echo "stub view failure on call $n" >&2; exit 1; }
+    if [ -e "$MS_DIR/pr.json.1" ]; then
+      while [ "$n" -gt 1 ] && [ ! -e "$MS_DIR/pr.json.$n" ]; do n=$((n - 1)); done
+      cat "$MS_DIR/pr.json.$n"
+    else cat "$MS_DIR/pr.json"; fi ;;
+  "api "*)
+    # Read-only REST fixtures: api.checkruns, api.status, api.log.<job id>; fail.log.<job id> fails that download.
+    case "$*" in
+      *"/check-runs"*) cat "$MS_DIR/api.checkruns" 2>/dev/null || echo '{"check_runs":[]}' ;;
+      *"/actions/jobs/"*"/logs"*) all="$*"; id=${all#*/actions/jobs/}; id=${id%%/*}
+        [ -e "$MS_DIR/fail.log.$id" ] && { echo "stub log failure" >&2; exit 1; }
+        cat "$MS_DIR/api.log.$id" || exit 1 ;;
+      *"/status"*) cat "$MS_DIR/api.status" 2>/dev/null || echo '{"statuses":[]}' ;;
+      *) exit 1 ;;
+    esac ;;
   "pr ready") [ -e "$MS_DIR/fail.ready" ] && exit 1 ;;
   "pr merge") [ -e "$MS_DIR/fail.merge" ] && exit 1 ;;
   "pr create") : ;;
@@ -709,8 +726,14 @@ case "$1 $2" in
 esac
 exit 0
 E
-chmod +x "$T/stubm/gh" "$T/stubm/git"
-resetgh() { rm -f "$MS"/gh.log "$MS"/fail.*; : >"$MS/gh.log"; rm -f "$T/pushed"; : >"$T/push.log"; }
+# Stub sleep: logs its arguments and returns at once, so no test ever waits.
+cat >"$T/stubm/sleep" <<'E'
+#!/bin/bash
+. "${0%/*}/stub.env"
+echo "$*" >>"$MS_DIR/sleep.log"
+E
+chmod +x "$T/stubm/gh" "$T/stubm/git" "$T/stubm/sleep"
+resetgh() { rm -f "$MS"/gh.log "$MS"/fail.* "$MS"/view.n "$MS"/pr.json.* "$MS"/api.*; : >"$MS/gh.log"; : >"$MS/sleep.log"; rm -f "$T/pushed"; : >"$T/push.log"; }
 ghcalled() { grep -qF -- "$1" "$MS/gh.log"; }
 nomut() { # name: neither gh pr ready nor gh pr merge ran
   if ghcalled '[pr] [merge]' || ghcalled '[pr] [ready]'; then bad "$1: mutating gh call happened: $(cat "$MS/gh.log")"; else ok; fi
@@ -967,6 +990,7 @@ cicase() { # name, draft(true|false), checks (jq array literal), verdict, skippe
   [ "$rc" = 0 ] && [ "$out" = "$want" ] && [ ! -s "$T/ci.err" ] && ok || bad "ci $n: rc=$rc out=$out err=$(cat "$T/ci.err")"
   [ "$(cat "$MS/gh.log")" = "$CIVIEW" ] && ok || bad "ci $n: gh calls other than the single read-only view: $(cat "$MS/gh.log")"
   nomut "ci $n"
+  [ ! -s "$MS/sleep.log" ] && ok || bad "ci $n: slept without --wait: $(cat "$MS/sleep.log")"
 }
 setrow "$GHURL" merge main
 cicase "passed" false "[$CK_OK,{__typename:\"StatusContext\",context:\"x\",state:\"SUCCESS\"}]" passed -
@@ -999,6 +1023,11 @@ printf '%s\n' "$out" | sed -n 2p | grep -q '^skipped: a b' && ok || bad "ci host
 [ "$(printf '%s\n' "$out" | sed -n 2p | tr -cd ',' | wc -c | tr -d ' ')" = 1 ] && ok || bad "ci hostile name added a list separator: $out"
 printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')" && bad "ci printed an escape character: $out" || ok
 nomut "ci hostile names"
+# A skipped check whose name is empty (or only invisible characters) must not look like "no skipped checks".
+resetgh; cij '.statusCheckRollup=[{__typename:"CheckRun",name:"",status:"COMPLETED",conclusion:"SKIPPED"},{__typename:"CheckRun",name:"\u200b\u001b",status:"COMPLETED",conclusion:"SKIPPED"},{__typename:"CheckRun",name:"ok",status:"COMPLETED",conclusion:"SUCCESS"}]'
+out=$("$K0" ci --pr 7 2>&1 </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$(printf '%s\n' "$out" | sed -n 2p)" = "skipped: (unnamed),(unnamed)" ] && ok || bad "ci empty skipped names: rc=$rc out=$out"
+nomut "ci empty skipped names"
 # Refusals: nothing is printed on stdout and nothing but the one read-only view may reach gh.
 cirefused() { # name, stderr substring
   local err rc o
@@ -1031,7 +1060,7 @@ done
 setrow "$GHURL" merge main
 refused "ci missing pr" "positive integer" "$K0" ci
 refused "ci bad pr" "positive integer" "$K0" ci --pr 0
-refused "ci unknown argument" "allowed here" "$K0" ci --pr 7 --expect-sha "$S"
+refused "ci unknown argument" "allowed here" "$K0" ci --pr 7 --bogus
 resetgh; cij .; refused "ci duplicate --after-ready" "duplicate --after-ready" "$K0" ci --pr 7 --after-ready --after-ready
 [ ! -s "$MS/gh.log" ] && ok || bad "ci duplicate --after-ready reached gh: $(cat "$MS/gh.log")"
 resetgh; fx .; refused "merge --after-ready" "unknown or disallowed argument" "$K0" merge --pr 7 --expect-sha "$S" --after-ready
@@ -1040,6 +1069,265 @@ nomut "merge --after-ready"
 git remote set-url origin "$T/m-remote.git"; setrow "$T/m-remote.git" merge main
 resetgh; cij .; cirefused "non-GitHub origin" "github.com only"
 git remote set-url origin "$GHURL"; setrow "$GHURL" merge main
+
+# --- ci --wait: polling (stub sleep logs, stub gh serves pr.json.N in sequence), and ci --logs ---
+setrow "$GHURL" merge main
+sleeps() { grep -c . "$MS/sleep.log"; }
+views() { grep -c '^\[pr\] \[view\]' "$MS/gh.log"; }
+seqv() { # N draft rollup [headRefOid]: write the Nth pr view response
+  jq -n --arg u "$CIURL" --arg h "${4:-$CIHEAD}" --argjson d "$2" "{isDraft:\$d,url:\$u,statusCheckRollup:$3,headRefOid:\$h}" >"$MS/pr.json.$1"
+}
+wantci() { printf 'verdict: %s\nskipped: %s\ndraft: %s\nurl: %s\nhead: %s' "$1" "$2" "$3" "$CIURL" "${4:-$CIHEAD}"; }
+# waitcase name, want verdict, want skipped, want draft, want views, want sleeps, ci args... (fixtures already set)
+waitcase() {
+  local n=$1 v=$2 sk=$3 d=$4 nv=$5 ns=$6 out rc
+  shift 6
+  out=$("$K0" ci --pr 7 "$@" 2>"$T/ci.err" </dev/null); rc=$?
+  [ "$rc" = 0 ] && [ "$out" = "$(wantci "$v" "$sk" "$d")" ] && ok || bad "ci wait $n: rc=$rc out=$out err=$(cat "$T/ci.err")"
+  [ "$(views)" = "$nv" ] && ok || bad "ci wait $n: expected $nv views, got $(views)"
+  [ "$(sleeps)" = "$ns" ] && ok || bad "ci wait $n: expected $ns sleeps, got $(sleeps)"
+  if [ "$ns" -gt 0 ]; then [ "$(sort -u "$MS/sleep.log")" = 30 ] && ok || bad "ci wait $n: sleep interval is not a constant 30: $(sort -u "$MS/sleep.log" | tr '\n' ' ')"; fi
+  nomut "ci wait $n"
+}
+CKJ_OK="[$CK_OK]"; CKJ_PEND="[$CK_OK,$CK_PEND]"
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
+waitcase "pending, pending, success (confirmed by a 4th poll)" passed - false 4 3 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"
+waitcase "passed on the first poll needs one confirming poll" passed - false 2 1 --wait 90
+resetgh; seqv 1 false "[$CK_OK,$CK_FAIL]"
+waitcase "failed on the first poll never sleeps" failed - false 1 0 --wait 90
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "[$CK_OK,$CK_FAIL]"
+waitcase "pending then failed stops" failed - false 2 1 --wait 90
+resetgh; seqv 1 false "[$CK_SKIP]"
+waitcase "skipped-only on the first poll never sleeps" skipped-only lint false 1 0 --wait 90
+resetgh; seqv 1 false "$CKJ_PEND"
+waitcase "always pending, --wait 60: budget exhausted, 1+floor(60/30) polls, no sleep after the last" pending - false 3 2 --wait 60
+resetgh; seqv 1 false "$CKJ_PEND"
+waitcase "always pending, --wait 30" pending - false 2 1 --wait 30
+resetgh; seqv 1 false "$CKJ_PEND"
+waitcase "always pending, --wait 45 (floor)" pending - false 2 1 --wait 45
+resetgh; seqv 1 false "$CKJ_PEND"
+waitcase "always pending, --wait 480 (max)" pending - false 17 16 --wait 480
+# --after-ready: a draft whose skipped checks are not back yet stays pending until they pass.
+resetgh; seqv 1 true "[$CK_OK,$CK_SKIP]"; seqv 2 true "$CKJ_OK"
+waitcase "after-ready then success" passed - true 3 2 --after-ready --wait 60
+resetgh; seqv 1 true "[$CK_SKIP]"
+waitcase "after-ready, skipped-only never settles" pending lint true 3 2 --after-ready --wait 60
+# none: checks may not be registered yet. ci_wait counts elapsed as max(real time, 30 s per sleep), so stub
+# sleeps still advance it: none turns final after the 120 s grace (poll 5), or the budget ends first.
+resetgh; seqv 1 false '[]'; seqv 2 false "$CKJ_OK"
+waitcase "none then success" passed - false 3 2 --wait 90
+resetgh; seqv 1 false '[]'; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
+waitcase "none then pending then success" passed - false 4 3 --wait 90
+resetgh; seqv 1 false '[]'
+out=$("$K0" ci --pr 7 --wait 60 2>"$T/ci.err" </dev/null); rc=$?
+[ "$rc" = 0 ] && printf '%s\n' "$out" | sed -n 1p | grep -qx 'verdict: none' && [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 5 ] && ok || bad "ci wait none persisting: rc=$rc out=$out err=$(cat "$T/ci.err")"
+[ "$(views)" = 3 ] && [ "$(sleeps)" = 2 ] && ok || bad "ci wait none persisting: views=$(views) sleeps=$(sleeps), expected 3 and 2"
+nomut "ci wait none persisting"
+resetgh; seqv 1 false '[]'
+waitcase "none persisting is final after 120 s" none - false 5 4 --wait 480
+resetgh; seqv 1 false '[]'
+waitcase "after-ready, none persisting stays pending" pending - false 5 4 --after-ready --wait 120
+# --expect-sha is checked on every poll.
+OTHERHEAD=fedcba9876543210fedcba9876543210fedcba98
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_PEND" "$OTHERHEAD"; seqv 3 false "$CKJ_OK" "$OTHERHEAD"
+out=$("$K0" ci --pr 7 --wait 90 --expect-sha "$CIHEAD" 2>"$T/ci.err" </dev/null); rc=$?
+[ "$rc" = 2 ] && grep -qF 'pull request head moved' "$T/ci.err" && [ -z "$out" ] && ok || bad "ci wait head moved on poll 2: rc=$rc out=$out err=$(cat "$T/ci.err")"
+[ "$(views)" = 2 ] && [ "$(sleeps)" = 1 ] && ok || bad "ci wait head moved: views=$(views) sleeps=$(sleeps), expected 2 and 1"
+nomut "ci wait head moved"
+resetgh; seqv 1 false "$CKJ_OK" "$OTHERHEAD"
+out=$("$K0" ci --pr 7 --expect-sha "$CIHEAD" 2>"$T/ci.err" </dev/null); rc=$?
+[ "$rc" = 2 ] && grep -qF 'pull request head moved' "$T/ci.err" && [ -z "$out" ] && ok || bad "ci expect-sha mismatch without --wait: rc=$rc out=$out err=$(cat "$T/ci.err")"
+nomut "ci expect-sha mismatch"
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_OK"
+waitcase "matching --expect-sha on every poll" passed - false 3 2 --wait 60 --expect-sha "$CIHEAD"
+# passed is final only after a second consecutive passed poll with the same check count and head.
+CKJ_OK2="[$CK_OK,$CK_NEUT]"
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK"
+waitcase "passed then passed (same count)" passed - false 2 1 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
+waitcase "passed, then a new pending check, then passed twice" passed - false 4 3 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_PEND"
+waitcase "passed, then a new pending check that stays pending" pending - false 4 3 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "[$CK_OK,$CK_FAIL]"
+waitcase "passed then failed" failed - false 2 1 --wait 90
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_PEND"; seqv 3 false "$CKJ_OK"
+waitcase "passed on the last affordable poll is pending (--wait 60)" pending - false 3 2 --wait 60
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_OK"
+waitcase "passed on the last affordable poll is pending (--wait 30)" pending - false 2 1 --wait 30
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK2"
+waitcase "check count change passed(1) -> passed(2) -> passed(2)" passed docs false 3 2 --wait 90
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK2"; seqv 3 false "$CKJ_OK"; seqv 4 false "$CKJ_OK2"
+waitcase "check count keeps changing, budget ends unconfirmed" pending docs false 4 3 --wait 90
+# Without --expect-sha the head must also be unchanged between the two passed polls.
+OTHERHEAD=fedcba9876543210fedcba9876543210fedcba98
+resetgh; seqv 1 false "$CKJ_OK"; seqv 2 false "$CKJ_OK" "$OTHERHEAD"
+out=$("$K0" ci --pr 7 --wait 90 2>"$T/ci.err" </dev/null); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$(wantci passed - false "$OTHERHEAD")" ] && ok || bad "ci wait head change between passed polls: rc=$rc out=$out"
+[ "$(views)" = 3 ] && [ "$(sleeps)" = 2 ] && ok || bad "ci wait head change between passed polls: views=$(views) sleeps=$(sleeps), expected 3 and 2"
+nomut "ci wait head change between passed polls"
+# A gh failure during a poll stops the call.
+resetgh; seqv 1 false "$CKJ_PEND"; seqv 2 false "$CKJ_OK"; touch "$MS/fail.view.2"
+out=$("$K0" ci --pr 7 --wait 90 2>"$T/ci.err" </dev/null); rc=$?
+[ "$rc" != 0 ] && ! printf '%s' "$out" | grep -q '^verdict: passed' && ok || bad "ci wait gh failure on poll 2: rc=$rc out=$out"
+[ "$(views)" = 2 ] && [ "$(sleeps)" = 1 ] && ok || bad "ci wait gh failure: views=$(views) sleeps=$(sleeps), expected 2 and 1"
+nomut "ci wait gh failure"
+# Argument errors: usage error, nothing printed on stdout, no gh call, no sleep.
+ciargbad() { # name, ci args...
+  local n=$1 out rc
+  shift
+  resetgh; seqv 1 false "$CKJ_OK"
+  out=$("$K0" ci --pr 7 "$@" 2>"$T/ci.err" </dev/null); rc=$?
+  [ "$rc" != 0 ] && [ -z "$out" ] && [ -s "$T/ci.err" ] && ok || bad "ci args $n: rc=$rc out=$out err=$(cat "$T/ci.err")"
+  [ ! -s "$MS/gh.log" ] && [ ! -s "$MS/sleep.log" ] && ok || bad "ci args $n reached gh or slept: $(cat "$MS/gh.log" "$MS/sleep.log")"
+}
+for w in 0 29 481 abc 060 030 -30 30.5 1e2 ' 60' ''; do ciargbad "--wait [$w]" --wait "$w"; done
+ciargbad "--wait without a value" --wait
+ciargbad "duplicate --wait" --wait 60 --wait 90
+ciargbad "duplicate --expect-sha" --expect-sha "$CIHEAD" --expect-sha "$CIHEAD"
+ciargbad "--logs with --wait" --logs --wait 60
+ciargbad "--wait with --logs" --wait 60 --logs
+ciargbad "--logs with --after-ready" --logs --after-ready
+ciargbad "duplicate --logs" --logs --logs
+for h in abc 0123456789ABCDEF0123456789ABCDEF01234567 "${CIHEAD%?}" "${CIHEAD}0" "${CIHEAD%?}g" ''; do ciargbad "--expect-sha [$h]" --expect-sha "$h"; done
+# --wait boundaries are accepted.
+for w in 30 480; do
+  resetgh; seqv 1 false "$CKJ_OK"
+  out=$("$K0" ci --pr 7 --wait "$w" 2>&1 </dev/null); rc=$?
+  [ "$rc" = 0 ] && ok || bad "ci --wait $w refused: rc=$rc out=$out"
+done
+# The level still gates the polling form.
+for lv in off commit pr; do
+  case "$lv" in off) delrow ;; commit) setrow - commit - ;; pr) setrow "$GHURL" pr main ;; esac
+  resetgh; seqv 1 false "$CKJ_OK"
+  out=$("$K0" ci --pr 7 --wait 60 2>&1 </dev/null); rc=$?
+  [ "$rc" = 2 ] && [ ! -s "$MS/gh.log" ] && [ ! -s "$MS/sleep.log" ] && ok || bad "ci --wait at level $lv: rc=$rc out=$out gh=$(cat "$MS/gh.log")"
+done
+setrow "$GHURL" merge main
+
+# ci --logs: failing job logs, read-only GETs, redacted, bounded.
+FAKE_GHP="gh""p_$(printf 'a%.0s' $(seq 1 40))"   # matches the hook's secret pattern; built at runtime
+ESC=$(printf '\033')
+LOGURL=https://github.com/acme/widget/actions/runs/9/job
+EXTURL=https://ci.example.invalid/build/42
+cr() { # id name conclusion app-slug url: one check run
+  jq -n --argjson i "$1" --arg n "$2" --arg c "$3" --arg a "$4" --arg u "$5" '{id:$i,name:$n,status:"completed",conclusion:$c,html_url:$u,details_url:$u,app:{slug:$a}}'
+}
+crs() { jq -s '{check_runs:.}'; }
+logcmd() { out=$("$K0" ci --pr 7 --logs "$@" 2>"$T/ci.err" </dev/null); rc=$?; }
+apimut() { # name: every gh api call is a plain GET (no method override, field, or input flags)
+  if grep '^\[api\]' "$MS/gh.log" | sed -e 's/\[--method\] \[GET\]//; s/\[-X\] \[GET\]//' | grep -qE '\[(-X|--method|-f|-F|--field|--raw-field|--input|-d)\]'; then
+    bad "$1: non-GET gh api call: $(cat "$MS/gh.log")"
+  else ok; fi
+  nomut "$1"
+}
+{ i=0; while [ $i -lt 300 ]; do i=$((i + 1)); case $i in
+    250) printf 'deploy key %s\n' "$FAKE_GHP" ;;
+    260) printf '%s[31mred text%s[0m\n' "$ESC" "$ESC" ;;
+    *) printf 'line %d\n' "$i" ;;
+  esac; done; } >"$T/log101"
+resetgh; seqv 1 false "[$CK_FAIL]"
+{ cr 101 build failure github-actions "$LOGURL/101"; cr 102 test timed_out github-actions "$LOGURL/102"
+  cr 103 lint success github-actions "$LOGURL/103"; cr 104 ext-build failure circleci "$EXTURL"; } | crs >"$MS/api.checkruns"
+cp "$T/log101" "$MS/api.log.101"; touch "$MS/fail.log.102"
+logcmd
+[ "$rc" = 0 ] && [ ! -s "$T/ci.err" ] && ok || bad "ci --logs: rc=$rc err=$(cat "$T/ci.err")"
+grep -qxF -- "--- job: build (failure) $LOGURL/101" <<<"$out" && ok || bad "ci --logs: missing job header: $out"
+grep -qxF 'line 300' <<<"$out" && grep -qxF 'line 101' <<<"$out" && ! grep -qxF 'line 100' <<<"$out" && ok || bad "ci --logs: not the last 200 lines"
+grep -qF "$FAKE_GHP" <<<"$out" && bad "ci --logs printed the secret" || ok
+grep -qxF '[line redacted by git-publish]' <<<"$out" && ok || bad "ci --logs: secret line was not replaced"
+[ "$(grep -cF '[line redacted by git-publish]' <<<"$out")" = 1 ] && ok || bad "ci --logs: redacted more than the secret line"
+printf '%s' "$out" | LC_ALL=C grep -q "$ESC" && bad "ci --logs: ANSI escape left in the output" || ok
+grep -qxF 'red text' <<<"$out" && ok || bad "ci --logs: ANSI line was not kept as plain text"
+grep -qF -- "--- job: test (timed_out) $LOGURL/102" <<<"$out" && grep -qF 'log unavailable' <<<"$out" && ok || bad "ci --logs: failed download must print log unavailable: $out"
+grep -qxF "external check: ext-build $EXTURL" <<<"$out" && ok || bad "ci --logs: missing external check line: $out"
+grep -qF -- 'job: lint' <<<"$out" && bad "ci --logs listed a passing check" || ok
+ghcalled "repos/acme/widget/commits/$CIHEAD/check-runs" && ghcalled "repos/acme/widget/actions/jobs/101/logs" && ok || bad "ci --logs: expected endpoints not called: $(cat "$MS/gh.log")"
+ghcalled "repos/acme/widget/commits/$CIHEAD/status" && ok || bad "ci --logs: commit status not read"
+ghcalled "actions/jobs/104" && bad "ci --logs downloaded a log of an external check" || ok
+[ ! -s "$MS/sleep.log" ] && ok || bad "ci --logs slept"
+[ "$(printf '%s\n' "$out" | sed -n 1p)" = "head: $CIHEAD" ] && ok || bad "ci --logs: first line is not the head: $(printf '%s\n' "$out" | sed -n 1p)"
+grep -E '^\[api\].*/check-runs' "$MS/gh.log" | grep -qF '[--paginate]' && grep -E '^\[api\].*/check-runs' "$MS/gh.log" | grep -qF 'per_page=100' && ok || bad "ci --logs: check-runs call is not paginated: $(cat "$MS/gh.log")"
+grep -E '^\[api\].*/status' "$MS/gh.log" | grep -qF '[--paginate]' && grep -E '^\[api\].*/status' "$MS/gh.log" | grep -qF 'per_page=100' && ok || bad "ci --logs: status call is not paginated: $(cat "$MS/gh.log")"
+apimut "ci --logs"
+# --expect-sha applies to --logs too.
+resetgh; seqv 1 false "[$CK_FAIL]" "$OTHERHEAD"
+logcmd --expect-sha "$CIHEAD"
+[ "$rc" = 2 ] && grep -qF 'pull request head moved' "$T/ci.err" && ! grep -q '^\[api\]' "$MS/gh.log" && ok || bad "ci --logs --expect-sha mismatch: rc=$rc err=$(cat "$T/ci.err") gh=$(cat "$MS/gh.log")"
+nomut "ci --logs head moved"
+# A legacy commit status that failed is reported as external; a green rollup run prints nothing.
+resetgh; seqv 1 false "[$CK_FAIL]"
+printf '{"statuses":[{"context":"ci/legacy","state":"failure","target_url":"%s"}]}' "$EXTURL/legacy" >"$MS/api.status"
+{ cr 103 lint success github-actions "$LOGURL/103"; } | crs >"$MS/api.checkruns"
+logcmd
+[ "$rc" = 0 ] && grep -qxF "external check: ci/legacy $EXTURL/legacy" <<<"$out" && ok || bad "ci --logs legacy status: rc=$rc out=$out"
+apimut "ci --logs legacy status"
+resetgh; seqv 1 false "$CKJ_OK"
+{ cr 103 lint success github-actions "$LOGURL/103"; } | crs >"$MS/api.checkruns"
+logcmd
+[ "$rc" = 0 ] && ! grep -qF -- '--- job:' <<<"$out" && ! grep -qF 'external check:' <<<"$out" && ok || bad "ci --logs with no failing checks: rc=$rc out=$out"
+grep -qxF 'no failing checks' <<<"$out" && ok || bad "ci --logs green run must print no failing checks: $out"
+apimut "ci --logs no failing checks"
+# At most 5 failing runs are fetched.
+resetgh; seqv 1 false "[$CK_FAIL]"
+{ for j in 201 202 203 204 205 206 207; do cr $j "job$j" failure github-actions "$LOGURL/$j"; done; } | crs >"$MS/api.checkruns"
+for j in 201 202 203 204 205 206 207; do printf 'log of %s\n' "$j" >"$MS/api.log.$j"; done
+logcmd
+[ "$rc" = 0 ] && [ "$(grep -c -- '^--- job: ' <<<"$out")" = 5 ] && ok || bad "ci --logs: expected exactly 5 job sections, rc=$rc: $(grep -- '^--- job: ' <<<"$out")"
+[ "$(grep -c 'actions/jobs/.*/logs' "$MS/gh.log")" = 5 ] && ok || bad "ci --logs: expected 5 log downloads: $(cat "$MS/gh.log")"
+grep -qxF 'more failing check runs not shown: 2' <<<"$out" && ok || bad "ci --logs: missing or wrong not-shown count: $out"
+apimut "ci --logs five-run cap"
+# Total output is capped at 100 KB.
+resetgh; seqv 1 false "[$CK_FAIL]"
+{ cr 301 big1 failure github-actions "$LOGURL/301"; cr 302 big2 failure github-actions "$LOGURL/302"; } | crs >"$MS/api.checkruns"
+BIGLINE=$(printf 'x%.0s' $(seq 1 998))
+for j in 301 302; do { i=0; while [ $i -lt 200 ]; do i=$((i + 1)); echo "$BIGLINE"; done; } >"$MS/api.log.$j"; done
+logcmd
+sz=$(printf '%s\n' "$out" | wc -c | tr -d ' ')
+[ "$rc" = 0 ] && [ "$sz" -le 102400 ] && [ "$sz" -gt 50000 ] && ok || bad "ci --logs 100 KB cap: rc=$rc size=$sz"
+resetgh; seqv 1 false "[$CK_FAIL]"
+{ for j in 311 312 313 314 315; do cr $j "big$j" failure github-actions "$LOGURL/$j"; done; } | crs >"$MS/api.checkruns"
+for j in 311 312 313 314 315; do { i=0; while [ $i -lt 200 ]; do i=$((i + 1)); echo "$BIGLINE"; done; } >"$MS/api.log.$j"; done
+logcmd
+sz=$(printf '%s\n' "$out" | wc -c | tr -d ' ')
+[ "$rc" = 0 ] && [ "$sz" -le 102400 ] && grep -qxF '[output truncated by git-publish at 100 KB]' <<<"$out" && ok || bad "ci --logs truncation marker: rc=$rc size=$sz tail=$(printf '%s\n' "$out" | tail -n 2 | cut -c1-80)"
+apimut "ci --logs size cap"
+# Redaction: private key blocks (even when the tail cuts the BEGIN line), bearer and authorization headers,
+# key/token/secret assignments, and invisible characters. Every fixture is built from fragments at runtime.
+PEM_B="-----""BEGIN RSA PRIV""ATE KEY-----"; PEM_E="-----""END RSA PRIV""ATE KEY-----"
+RV=$(printf 'q%.0s' $(seq 1 24))
+{ i=0; while [ $i -lt 300 ]; do i=$((i + 1)); case $i in
+    50) printf '%s\n' "$PEM_B" ;;
+    [5-9][1-9]|[6-9]0|1[0-2][0-9]|130) printf 'pembody%d\n' "$i" ;;
+    131) printf '%s\n' "$PEM_E" ;;
+    132) echo 'after pem block' ;;
+    200) printf 'Authori''zation: Bea''rer %s\n' "$RV" ;;
+    210) printf 'AWS_SECRET_''ACCESS_KEY=%s\n' "$RV" ;;
+    220) printf 'MY_TO''KEN: %s\n' "$RV" ;;
+    230) printf 'ze\xE2\x80\x8Bro\xEF\xBB\xBFwi\xF3\xA0\x80\x81dth\xE2\x80\xA8x\n' ;;
+    *) printf 'line %d\n' "$i" ;;
+  esac; done; } >"$T/log401"
+resetgh; seqv 1 false "[$CK_FAIL]"
+{ cr 401 redact failure github-actions "$LOGURL/401"; } | crs >"$MS/api.checkruns"; cp "$T/log401" "$MS/api.log.401"
+logcmd
+[ "$rc" = 0 ] && ok || bad "ci --logs redaction: rc=$rc err=$(cat "$T/ci.err")"
+grep -qF 'pembody' <<<"$out" && bad "ci --logs: private key body line leaked after the tail cut it" || ok
+grep -qF -- "$PEM_E" <<<"$out" && bad "ci --logs: private key END line leaked" || ok
+grep -qxF 'after pem block' <<<"$out" && grep -qxF 'line 300' <<<"$out" && grep -qxF 'line 133' <<<"$out" && ok || bad "ci --logs: lines after the key block were not kept"
+grep -qF "$RV" <<<"$out" && bad "ci --logs: bearer, assignment or token value leaked" || ok
+grep -qxF 'zerowidthx' <<<"$out" && ok || bad "ci --logs: invisible characters not stripped: $(printf '%s' "$out" | grep -a 'zero' | od -c | head -3)"
+# 31 key-block lines inside the tail (101..131) plus bearer, AWS and token lines are redacted.
+[ "$(grep -cxF '[line redacted by git-publish]' <<<"$out")" = 34 ] && ok || bad "ci --logs redaction: expected 34 redacted lines, got $(grep -cxF '[line redacted by git-publish]' <<<"$out")"
+apimut "ci --logs redaction"
+# A PGP private key block (header ends in BLOCK) is redacted too.
+PGP_B="-----""BEGIN PGP PRIV""ATE KEY BLOCK-----"; PGP_E="-----""END PGP PRIV""ATE KEY BLOCK-----"
+{ echo 'before pgp'; printf '%s\n' "$PGP_B"; echo 'pgpbody1'; echo 'pgpbody2'; printf '%s\n' "$PGP_E"; echo 'after pgp'; } >"$MS/api.log.401"
+logcmd
+[ "$rc" = 0 ] && grep -qxF 'before pgp' <<<"$out" && grep -qxF 'after pgp' <<<"$out" && ok || bad "ci --logs pgp: rc=$rc out=$out"
+grep -qF 'pgpbody' <<<"$out" && bad "ci --logs: PGP key body leaked" || ok
+grep -qF -- "$PGP_B" <<<"$out" || grep -qF -- "$PGP_E" <<<"$out" && bad "ci --logs: PGP key header or footer leaked" || ok
+[ "$(grep -cxF '[line redacted by git-publish]' <<<"$out")" = 4 ] && ok || bad "ci --logs pgp: expected 4 redacted lines"
+apimut "ci --logs pgp redaction"
 
 # --- CI/policy files: workflows, actions, CODEOWNERS and Claude Code config (.claude/, CLAUDE.md, .mcp.json) ---
 # merge never accepts a change to them; push, pr and plan accept it only with a ci registry column.
@@ -1606,7 +1894,7 @@ case "$GHENV" in
   *) [ "${GHENV#*|}" = "${GHENV%%|*}/.config/gh" ] && [ -d "${GHENV%%|*}" ] && ok || bad "gh environment: $GHENV" ;;
 esac
 # mark-ready needs GraphQL, which the cloud blocks.
-CMARKWHY="cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr 7 --after-ready"
+CMARKWHY="cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr 7 --after-ready --wait 480"
 cres; fixtures '.draft=true' "$DEFRUNS" "$DEFSTAT"
 refused "cloud mark-ready-only on a draft" "$CMARKWHY" "${CMARK[@]}"; noput "cloud mark-ready-only"; apionly "cloud mark-ready-only"
 cres; fixtures '.draft=false' "$DEFRUNS" "$DEFSTAT"
