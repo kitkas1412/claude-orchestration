@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Global PreToolUse guard for Serena MCP tools (mcp__serena__*), main session AND subagents. Exit 2 = block. Requires jq.
 # Default-deny: only the four symbol read tools pass, so unknown future Serena tools are blocked.
-# Path-like arguments must exist, stay inside the project (symlinks resolved) and away from secrets. Defense in depth, NOT a sandbox.
+# Path-like arguments must exist, stay inside the project (symlinks resolved) and away from secrets. Absolute paths are
+# accepted only when they resolve to the project root or below it; "~" paths are always denied. Defense in depth, NOT a sandbox.
 set -f
 command -v jq >/dev/null 2>&1 || { echo "BLOCKED: jq is required by guard-mcp-serena" >&2; exit 2; }
 INPUT=$(cat)
@@ -87,12 +88,15 @@ while IFS= read -r P; do
   [ -z "$P" ] && continue
   L=$(printf '%s' "$P" | tr '[:upper:]' '[:lower:]' | sed -e 's#//*#/#g')
   case "$L" in
-    /*|"~"*)                                   deny "absolute or home path ($P)" ;;
+    "~"*)                                      deny "home path ($P)" ;;
     *\\*)                                      deny "backslash in path ($P)" ;;
     ..|../*|*/..|*/../*)                       deny "path leaves the project ($P)" ;;
   esac
   secret "$L" "$P"
-  R=$(resolve "$RR/$P") || deny "path does not exist or cannot be resolved ($P)"
+  case "$P" in
+    /*) R=$(resolve "$P") || deny "path does not exist or cannot be resolved ($P)" ;;
+    *)  R=$(resolve "$RR/$P") || deny "path does not exist or cannot be resolved ($P)" ;;
+  esac
   case "$R" in
     "$RR") ;;
     "$RR"/*) secret "$(printf '%s' "${R#"$RR"/}" | tr '[:upper:]' '[:lower:]')" "$P" ;;
