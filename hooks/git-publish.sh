@@ -175,8 +175,12 @@ is_secret() { printf '%s\n' "$1" | LC_ALL=C grep -aEiq -- "$SECRET_RE"; [ "$?" -
 lower() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
 # Display only: drops C0 controls, then UTF-8 C1 controls and bidirectional overrides.
 sanitize() {
-  LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -e $'s/\xC2[\x80-\x9F]//g' -e $'s/\xE2\x80[\x8E\x8F\xAA-\xAE]//g' -e $'s/\xE2\x81[\xA6-\xA9]//g'
+  LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed -e $'s/\xC2[\x80-\x9F]//g' -e $'s/\xE2\x80[\x8E\x8F\xAA-\xAE]//g' -e $'s/\xE2\x81[\xA6-\xA9]//g' \
+    -e $'s/\xE2\x80[\x8B-\x8D\xA8\xA9]//g' -e $'s/\xEF\xBB\xBF//g' -e $'s/\xF3\xA0[\x80\x81][\x80-\xBF]//g'
 }
+# Extra line patterns redacted from `ci --logs` output only (SECRET_RE also gates commits, so it is not widened).
+LOG_RE='bearer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}|authorization:'
+LOG_RE="$LOG_RE|[A-Za-z0-9_.-]*(token|key|secret|password|passwd|pwd|credential)[A-Za-z0-9_.-]*[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}"
 
 REFUSALS=0
 refuse() {
@@ -196,6 +200,8 @@ OPT_ALLOW_CI=0
 OPT_MARK_READY=0
 OPT_AFTER_READY=0
 OPT_ACCOUNT=""
+OPT_WAIT=""
+OPT_LOGS=0
 parse_opts() {
   local allowed="$1" flag
   shift
@@ -223,6 +229,12 @@ parse_opts() {
       shift
       continue
     fi
+    if [ "$flag" = --logs ]; then
+      [ "$OPT_LOGS" = 0 ] || die "duplicate $flag"
+      OPT_LOGS=1
+      shift
+      continue
+    fi
     [ $# -ge 2 ] && [ -n "$2" ] || die "$flag needs a value"
     case "$flag" in
       --expect-sha) [ -z "$OPT_EXPECT" ] || die "duplicate $flag"; OPT_EXPECT=$2 ;;
@@ -232,6 +244,7 @@ parse_opts() {
       --style) [ -z "$OPT_STYLE" ] || die "duplicate $flag"; OPT_STYLE=$2 ;;
       --pr) [ -z "$OPT_PR" ] || die "duplicate $flag"; OPT_PR=$2 ;;
       --account) [ -z "$OPT_ACCOUNT" ] || die "duplicate $flag"; OPT_ACCOUNT=$2 ;;
+      --wait) [ -z "$OPT_WAIT" ] || die "duplicate $flag"; OPT_WAIT=$2 ;;
       *) die "unknown or disallowed argument; allowed here: ${allowed:-none}" ;;
     esac
     shift 2
@@ -1145,9 +1158,10 @@ PR_CI_FILTER="$PR_CI_DEFS"'
     elif any(. == "success") then "passed"
     else "skipped-only" end'
 # Commas and control characters are replaced so a check name cannot fake a list entry or an output line.
+# Every name ends with a comma, so one skipped check with an empty name is still a non-empty result.
 PR_CI_SKIPPED="$PR_CI_DEFS"'
   [(.statusCheckRollup // [])[] | select(verdict == "skipped") | (.name // "" | tostring | gsub("[[:cntrl:],]+"; " "))]
-  | join(",")'
+  | map(. + ",") | add // ""'
 PR_CI_FIELDS=isDraft,statusCheckRollup,url,headRefOid
 PR_CI_SHAPE='length == 1 and (.[0] | type == "object"
   and (.isDraft | type) == "boolean" and (.url | type) == "string" and (.headRefOid | type) == "string"
@@ -1259,15 +1273,23 @@ compute_ci_verdict() {
   esac
 }
 
-cmd_ci() {
-  local bad="gh returned an unexpected pull request response" draft url skipped head
-  parse_opts "--pr --after-ready" "$@"
-  require_pr_number
-  command -v gh >/dev/null 2>&1 || die "gh is not installed"
-  command -v jq >/dev/null 2>&1 || die "jq is not installed"
-  require_level merge
-  resolve_slug || die "reading CI is supported on github.com only"
-  ensure_account_token
+# --- ci: read-only CI verdict (optionally polled) and failing-check logs ---
+CI_POLL_INTERVAL=30
+# A pull request with no checks at all is final only after this many seconds of a --wait call.
+CI_NONE_GRACE=120
+CI_LOG_MAX_RUNS=5
+CI_LOG_TAIL=200
+CI_LOG_CAP=102400
+CI_LOG_TRUNCATED='[output truncated by git-publish at 100 KB]'
+CI_SKIPPED=""
+CI_DRAFT=""
+CI_URL=""
+CI_HEAD=""
+
+# One fresh read of the pull request: sets CI_VERDICT (after the --after-ready mapping), CI_SKIPPED, CI_DRAFT,
+# CI_URL and CI_HEAD, and refuses when --expect-sha was given and the head moved. Runs in the main shell.
+ci_fetch_verdict() {
+  local bad="gh returned an unexpected pull request response" url
 
   if [ "$BACKEND" = cloud-rest ]; then
     PR_JSON=$(cloud_pr_view "$OPT_PR") || die "cannot read pull request $OPT_PR with gh"
@@ -1283,9 +1305,10 @@ cmd_ci() {
       passed) [ -z "$(printf '%s' "$PR_JSON" | jq -r "$PR_CI_SKIPPED" 2>/dev/null)" ] || CI_VERDICT=pending ;;
     esac
   fi
-  skipped=$(printf '%s' "$PR_JSON" | jq -r "$PR_CI_SKIPPED" 2>/dev/null) || die "cannot evaluate the CI checks"
-  skipped=$(printf '%s' "$skipped" | sanitize)
-  draft=$(pr_field isDraft) || die "$bad"
+  CI_SKIPPED=$(printf '%s' "$PR_JSON" | jq -r "$PR_CI_SKIPPED" 2>/dev/null) || die "cannot evaluate the CI checks"
+  # A name that is empty after sanitizing becomes (unnamed), so a skipped check never prints as the "-" of no skipped checks.
+  CI_SKIPPED=$(printf '%s' "$CI_SKIPPED" | sanitize | tr -d '\n' | awk 'BEGIN {RS = ","; ORS = ""} {if (n++) printf ","; if ($0 ~ /^[[:space:]]*$/) printf "(unnamed)"; else printf "%s", $0}')
+  CI_DRAFT=$(pr_field isDraft) || die "$bad"
   url=$(pr_field url) || die "$bad"
   case "$url" in
     https://*) ;;
@@ -1294,9 +1317,158 @@ cmd_ci() {
   case "$url" in
     *[[:space:][:cntrl:]]*) die "$bad" ;;
   esac
-  head=$(pr_field headRefOid) || die "$bad"
-  matches "$head" '^[0-9a-f]{40}$' || die "$bad"
-  printf 'verdict: %s\nskipped: %s\ndraft: %s\nurl: %s\nhead: %s\n' "$CI_VERDICT" "${skipped:--}" "$draft" "$(printf '%s' "$url" | sanitize)" "$head"
+  CI_URL=$(printf '%s' "$url" | sanitize)
+  CI_HEAD=$(pr_field headRefOid) || die "$bad"
+  matches "$CI_HEAD" '^[0-9a-f]{40}$' || die "$bad"
+  [ -z "$OPT_EXPECT" ] || [ "$CI_HEAD" = "$OPT_EXPECT" ] || die "pull request head moved (now $CI_HEAD)"
+}
+
+ci_print_verdict() {
+  printf 'verdict: %s\nskipped: %s\ndraft: %s\nurl: %s\nhead: %s\n' "$CI_VERDICT" "${CI_SKIPPED:--}" "$CI_DRAFT" "$CI_URL" "$CI_HEAD"
+}
+
+# Polls until the verdict is final or the --wait budget is spent; never sleeps after the last poll.
+# Elapsed time is at least one interval per sleep, so the bounds hold even when sleep returns early.
+ci_wait() {
+  local start=$SECONDS polls=0 max elapsed floor
+  max=$((1 + OPT_WAIT / CI_POLL_INTERVAL))
+  while :; do
+    ci_fetch_verdict
+    polls=$((polls + 1))
+    elapsed=$((SECONDS - start))
+    floor=$(((polls - 1) * CI_POLL_INTERVAL))
+    [ "$elapsed" -ge "$floor" ] || elapsed=$floor
+    case "$CI_VERDICT" in
+      passed|failed|skipped-only) break ;;
+      none) [ "$elapsed" -lt "$CI_NONE_GRACE" ] || break ;;
+    esac
+    [ "$polls" -lt "$max" ] && [ $((elapsed + CI_POLL_INTERVAL)) -le "$OPT_WAIT" ] || break
+    sleep "$CI_POLL_INTERVAL" || die "cannot wait between CI polls"
+  done
+}
+
+# Fields joined by tabs; control characters become spaces and empty fields `-`, so a field cannot fake a line
+# or collapse into its neighbour. The first output line is the number of failing check runs.
+CI_RUNS_FAILING='if length == 0 or any(.[]; type != "object" or (.check_runs | type) != "array") then error("shape") else . end
+  | [.[] | .check_runs[]] | if any(.[]; type != "object") then error("shape") else . end
+  | [.[] | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")]
+  | (length | tostring),
+    (.[:'"$CI_LOG_MAX_RUNS"'][] | [(.id | tostring), (.app.slug // ""), (.name // ""), (.conclusion // ""), (.html_url // "")]
+      | map(tostring | gsub("[[:cntrl:]]+"; " ") | if . == "" then "-" else . end) | join("\t"))'
+CI_STATUS_FAILING='if length == 0 or any(.[]; type != "object" or (.statuses | type) != "array") then error("shape") else . end
+  | [.[] | .statuses[]] | if any(.[]; type != "object") then error("shape") else . end
+  | .[] | select(.state == "failure" or .state == "error")
+  | [(.context // ""), (.target_url // "")]
+  | map(tostring | gsub("[[:cntrl:]]+"; " ") | if . == "" then "-" else . end) | join("\t")'
+
+CI_OUT=""
+ci_out() { CI_OUT="$CI_OUT$1"$'\n'; }
+# Only an https URL without spaces is shown; anything else is `-`.
+ci_link() {
+  case "$1" in
+    https://*) case "$1" in *[[:space:]]*) printf '%s' - ;; *) printf '%s' "$1" | sanitize ;; esac ;;
+    *) printf '%s' - ;;
+  esac
+}
+
+# The last lines of one GitHub Actions job log, cleaned for display; non-zero when it cannot be shown.
+ci_job_log() {
+  local raw nums rc
+  # Order: strip ANSI, sanitize, redact whole private key blocks (before the tail, so a cut block stays hidden), tail.
+  raw=$(set -o pipefail; gh_run api "repos/$REPO_SLUG/actions/jobs/$1/logs" 2>/dev/null \
+    | LC_ALL=C sed -e $'s/\x1b\\[[0-9;?]*[ -/]*[@-~]//g' -e $'s/\x1b][^\x07\x1b]*\x07//g' | sanitize \
+    | LC_ALL=C awk '/-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY( BLOCK)?-----/ {pem = 1} pem {print "[line redacted by git-publish]"; if ($0 ~ /-----END ([A-Z0-9]+ )*PRIVATE KEY( BLOCK)?-----/) pem = 0; next} {print}' \
+    | tail -n "$CI_LOG_TAIL") || return 1
+  # Only grep's "no match" counts as clean; on a grep error the log is not shown.
+  nums=$(set -o pipefail; printf '%s\n' "$raw" | LC_ALL=C grep -anEi -- "$SECRET_RE|$LOG_RE" | LC_ALL=C awk -F: '{print $1}' | tr '\n' ' ')
+  rc=$?
+  [ "$rc" -le 1 ] || return 1
+  printf '%s\n' "$raw" | LC_ALL=C awk -v n=" $nums " 'index(n, " " NR " ") {print "[line redacted by git-publish]"; next} {print}'
+}
+
+# Read-only: every call below is a GET. Prints failing check runs (with the job log tail for GitHub Actions)
+# and failing commit statuses for the pull request head, capped at CI_LOG_CAP bytes.
+ci_logs() {
+  local runs statuses total line id app name concl link log n shown=0 bad="gh returned an unexpected check run list"
+  runs=$(gh_run api --paginate "repos/$REPO_SLUG/commits/$CI_HEAD/check-runs?per_page=100" 2>/dev/null) \
+    || die "cannot list the check runs of pull request $OPT_PR with gh$(acct_note)"
+  runs=$(printf '%s' "$runs" | jq -sr "$CI_RUNS_FAILING" 2>/dev/null) || die "$bad"
+  statuses=$(gh_run api --paginate "repos/$REPO_SLUG/commits/$CI_HEAD/status?per_page=100" 2>/dev/null) \
+    || die "cannot list the commit statuses of pull request $OPT_PR with gh$(acct_note)"
+  statuses=$(printf '%s' "$statuses" | jq -sr "$CI_STATUS_FAILING" 2>/dev/null) || die "gh returned an unexpected commit status list"
+  total=${runs%%$'\n'*}
+  case "$total" in
+    ""|*[!0123456789]*) die "$bad" ;;
+  esac
+
+  ci_out "head: $CI_HEAD"
+  while IFS=$'\t' read -r id app name concl link; do
+    [ -n "$id" ] || continue
+    case "$id" in
+      *[!0123456789]*) die "$bad" ;;
+    esac
+    name=$(printf '%s' "$name" | sanitize)
+    link=$(ci_link "$link")
+    shown=$((shown + 1))
+    if [ "$app" != github-actions ]; then
+      ci_out "external check: $name $link"
+      continue
+    fi
+    ci_out "--- job: $name ($(printf '%s' "$concl" | sanitize)) $link"
+    if log=$(ci_job_log "$id"); then
+      [ -z "$log" ] || ci_out "$log"
+    else
+      ci_out "log unavailable"
+    fi
+  done <<<"$(printf '%s\n' "$runs" | sed 1d)"
+  [ "$total" -le "$shown" ] || ci_out "more failing check runs not shown: $((total - shown))"
+  while IFS=$'\t' read -r name link; do
+    [ -n "$name" ] || continue
+    ci_out "external check: $(printf '%s' "$name" | sanitize) $(ci_link "$link")"
+  done <<<"$statuses"
+  [ "$total" -gt 0 ] || [ -n "$statuses" ] || ci_out "no failing checks"
+
+  n=$(printf '%s' "$CI_OUT" | LC_ALL=C wc -c | tr -d ' ')
+  if [ "$n" -le "$CI_LOG_CAP" ]; then
+    printf '%s' "$CI_OUT"
+  else
+    printf '%s' "$CI_OUT" | LC_ALL=C head -c $((CI_LOG_CAP - ${#CI_LOG_TRUNCATED} - 2))
+    printf '\n%s\n' "$CI_LOG_TRUNCATED"
+  fi
+}
+
+cmd_ci() {
+  parse_opts "--pr --after-ready --expect-sha --wait --logs" "$@"
+  require_pr_number
+  [ -z "$OPT_EXPECT" ] || require_expect_sha
+  if [ -n "$OPT_WAIT" ]; then
+    case "$OPT_WAIT" in
+      0*|*[!0123456789]*) die "--wait must be a whole number of seconds from 30 to 480" ;;
+    esac
+    [ "${#OPT_WAIT}" -le 3 ] && [ "$OPT_WAIT" -ge 30 ] && [ "$OPT_WAIT" -le 480 ] \
+      || die "--wait must be a whole number of seconds from 30 to 480"
+  fi
+  if [ "$OPT_LOGS" = 1 ]; then
+    [ -z "$OPT_WAIT" ] && [ "$OPT_AFTER_READY" = 0 ] || die "--logs cannot be combined with --wait or --after-ready"
+  fi
+  command -v gh >/dev/null 2>&1 || die "gh is not installed"
+  command -v jq >/dev/null 2>&1 || die "jq is not installed"
+  require_level merge
+  resolve_slug || die "reading CI is supported on github.com only"
+  # Resolved once; the token stays in this shell for every poll of the call.
+  ensure_account_token
+
+  if [ "$OPT_LOGS" = 1 ]; then
+    ci_fetch_verdict
+    ci_logs
+    return 0
+  fi
+  if [ -n "$OPT_WAIT" ]; then
+    ci_wait
+  else
+    ci_fetch_verdict
+  fi
+  ci_print_verdict
 }
 
 cmd_merge() {
@@ -1350,7 +1522,7 @@ cmd_merge() {
   [ "$CI_VERDICT" != failed ] || die "CI checks are failing"
 
   if [ "$OPT_MARK_READY" = 1 ]; then
-    [ "$BACKEND" = local ] || die "cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr $OPT_PR --after-ready"
+    [ "$BACKEND" = local ] || die "cannot mark ready in cloud (GraphQL blocked); click Ready for review on GitHub, then run ci --pr $OPT_PR --after-ready --wait 480"
     gh_run pr ready "$OPT_PR" --repo "$REPO_SLUG" >/dev/null 2>&1 || die "gh could not mark the pull request ready$(acct_note)"
     printf 'marked ready: %s %s\n' "$OPT_PR" "$OPT_EXPECT"
     return 0
@@ -1486,7 +1658,7 @@ cmd_disable() {
   printf 'git-publish: disabled\n'
 }
 
-[ $# -ge 1 ] || die "usage: git-publish.sh status|plan|push|pr|merge|ci [--pr <n> [--after-ready]]|enable|disable"
+[ $# -ge 1 ] || die "usage: git-publish.sh status|plan|push|pr|merge|ci [--pr <n> [--after-ready] [--expect-sha <sha>] [--wait <secs>] | --pr <n> --logs [--expect-sha <sha>]]|enable|disable"
 SUBCOMMAND=$1
 shift
 validate_session_bus
