@@ -628,8 +628,9 @@ SHOOK="$HOOKS/guard-mcp-serena.sh"
 # Temp project root with fixtures; SOUT is a directory outside it. Removed at the end of this section.
 SROOT=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")
 SOUT=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")
-mkdir -p "$SROOT/src"
-touch "$SROOT/src/app.py" "$SROOT/.env.local" "$SOUT/secret-target.txt"
+mkdir -p "$SROOT/src" "$SROOT/.git"   # .git pins the root here even if an ancestor of the temp dir has markers
+touch "$SROOT/src/app.py" "$SROOT/src/a..b.py" "$SROOT/.env.local" "$SOUT/secret-target.txt"
+ln -s "$SROOT/does-not-exist-target" "$SROOT/link_dangling"
 ln -s "$SOUT" "$SROOT/link_out"
 ln -s "$SOUT/secret-target.txt" "$SROOT/link_file_out"
 ln -s "$SROOT/src/app.py" "$SROOT/link_ok"
@@ -729,8 +730,12 @@ checks 2 $SF '{"relative_path":"link_out/secret-target.txt"}'
 checks 2 $SF '{"relative_path":"link_file_out"}'
 checks 0 $SF '{"relative_path":"link_ok"}'
 checks 2 $SF '{"relative_path":"link_secret"}'
-checks 0 $SF '{"relative_path":"src/not-yet-created.py"}'
-checks 0 $SF '{"relative_path":"newdir/newfile.py"}'
+checks 2 $SF '{"relative_path":"src/not-yet-created.py"}'
+checks 2 $SF '{"relative_path":"newdir/newfile.py"}'
+checks 2 $SF '{"relative_path":"link_dangling"}'
+checks 0 $SF '{"relative_path":"src"}'
+checks 0 $SF '{"relative_path":"src/app.py"}'
+checks 0 $SF '{"relative_path":"."}'
 # non-string, null and multi-line path values
 checks 2 $SF '{"relative_path":5}'
 checks 2 $SF '{"relative_path":{"a":"b"}}'
@@ -744,9 +749,72 @@ checks 2 mcp__my-serena__find_symbol '{}'
 checks 2 mcp__Serena__find_symbol '{}'
 checks 2 mcp__plugin_x_serena__read_file '{}'
 checks 2 mcp__plugin_x_serena__find_symbol '{"relative_path":"src"}'
+# root detection: .serena/project.yml ancestor, else .git (dir or file) ancestor, else the start dir
+RA=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")   # .serena/project.yml marker
+mkdir -p "$RA/.serena" "$RA/pkg/sub"; touch "$RA/.serena/project.yml" "$RA/top.txt" "$RA/pkg/sub/only-here.txt"
+RG=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")   # .git directory marker
+mkdir -p "$RG/.git" "$RG/a/b"; touch "$RG/top.txt" "$RG/a/b/only-here.txt"
+RF=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")   # .git file marker (worktree or submodule form)
+mkdir -p "$RF/a/b"; printf 'gitdir: /nonexistent/gitdir\n' > "$RF/.git"; touch "$RF/top.txt" "$RF/a/b/only-here.txt"
+RN=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")   # no markers: root is the start dir
+touch "$RN/x.txt"
+RW=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")   # worktree-shaped layout
+mkdir -p "$RW/.serena" "$RW/src" "$RW/.claude/worktrees/x"; touch "$RW/.serena/project.yml" "$RW/src/ok.txt"
+ln -s "$SOUT" "$RW/src/escape"
+SPD=$RA/pkg/sub
+checks 0 $SF '{"relative_path":"top.txt"}'
+checks 2 $SF '{"relative_path":"only-here.txt"}'
+SPD=$RG/a/b
+checks 0 $SF '{"relative_path":"top.txt"}'
+checks 2 $SF '{"relative_path":"only-here.txt"}'
+SPD=$RF/a/b
+checks 0 $SF '{"relative_path":"top.txt"}'
+checks 2 $SF '{"relative_path":"only-here.txt"}'
+SPD=$RN
+checks 0 $SF '{"relative_path":"x.txt"}'
+SPD=$RW/.claude/worktrees/x
+checks 0 $SF '{"relative_path":"src/ok.txt"}'
+checks 2 $SF '{"relative_path":"src/escape"}'
+checks 2 $SF '{"relative_path":"src/escape/secret-target.txt"}'
+SPD=""; SCWD=$RA/pkg/sub   # same detection when the start comes from the input cwd
+checks 0 $SF '{"relative_path":"top.txt"}'
+checks 2 $SF '{"relative_path":"only-here.txt"}'
+SCWD=""; SPD=$SROOT
+
+# resolver fallbacks, each with a restricted PATH holding only the named tools
+rpath() { # rpath <want> <label> <dir> <relative_path>; the dir holds the tools linked by mkpath
+  local want=$1 label=$2 dir=$3 rp=$4 got
+  jq -n --arg p "$rp" '{tool_name:"mcp__serena__find_symbol",tool_input:{relative_path:$p}}' | CLAUDE_PROJECT_DIR="$SROOT" PATH="$dir" "$BASH_BIN" "$SHOOK" >/dev/null 2>&1; got=$?
+  if [ "$got" = "$want" ]; then echo "ok    [guard-mcp-serena.sh] $label: $rp"; else echo "FAIL  [guard-mcp-serena.sh] $label: $rp want=$want got=$got"; fail=1; fi
+}
+mkpath() { # mkpath <dir> <extra tool>...: link the base tools plus extras that exist; prints nothing
+  local d=$1 b; shift
+  for b in jq tr sed cat dirname uname "$@"; do ln -s "$(command -v $b)" "$d/$b" 2>/dev/null; done
+}
+NOPERL=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX"); mkpath "$NOPERL" python3
+NOPYT=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX"); mkpath "$NOPYT" perl
+if command -v perl >/dev/null 2>&1; then
+  rpath 0 "perl only" "$NOPYT" src/app.py
+  rpath 0 "perl only" "$NOPYT" src
+  rpath 2 "perl only" "$NOPYT" link_out
+  rpath 2 "perl only" "$NOPYT" link_dangling
+  rpath 2 "perl only" "$NOPYT" src/not-yet-created.py
+else
+  echo "skip  [guard-mcp-serena.sh] perl not installed; perl-only cases not run"
+fi
+if command -v python3 >/dev/null 2>&1 && python3 -I -c 'pass' >/dev/null 2>&1; then
+  rpath 0 "python3 only" "$NOPERL" src/app.py
+  rpath 0 "python3 only" "$NOPERL" src
+  rpath 2 "python3 only" "$NOPERL" link_out
+  rpath 2 "python3 only" "$NOPERL" link_dangling
+  rpath 2 "python3 only" "$NOPERL" src/not-yet-created.py
+else
+  echo "skip  [guard-mcp-serena.sh] python3 not usable; python3-only cases not run"
+fi
+
 # neither python3 nor perl on PATH: a non-empty path fails closed, no path still passes
 NOPY=$(mktemp -d "${TMPDIR:-/tmp}/serena-hook-test.XXXXXX")
-for b in jq tr sed cat; do ln -s "$(command -v $b)" "$NOPY/$b"; done
+for b in jq tr sed cat dirname uname; do ln -s "$(command -v $b)" "$NOPY/$b"; done
 printf '%s' '{"tool_name":"mcp__serena__find_symbol","tool_input":{"relative_path":"src/app.py"}}' | CLAUDE_PROJECT_DIR="$SROOT" PATH="$NOPY" "$BASH_BIN" "$SHOOK" >/dev/null 2>&1; got=$?
 if [ "$got" = 2 ]; then echo "ok    [guard-mcp-serena.sh] no python3/perl: path denied"; else echo "FAIL  [guard-mcp-serena.sh] no python3/perl path: want=2 got=$got"; fail=1; fi
 printf '%s' '{"tool_name":"mcp__serena__find_symbol","tool_input":{"name_path":"Foo"}}' | CLAUDE_PROJECT_DIR="$SROOT" PATH="$NOPY" "$BASH_BIN" "$SHOOK" >/dev/null 2>&1; got=$?
@@ -755,10 +823,12 @@ NOJQ3=$(mktemp -d)
 printf '%s' '{"tool_name":"Read"}' | PATH="$NOJQ3" "$BASH_BIN" "$SHOOK" >/dev/null 2>&1; got=$?
 if [ "$got" = 2 ]; then echo "ok    [guard-mcp-serena.sh] jq missing"; else echo "FAIL  [guard-mcp-serena.sh] jq missing: want=2 got=$got"; fail=1; fi
 rmdir "$NOJQ3"
-for b in jq tr sed cat; do rm -f "$NOPY/$b"; done
-rmdir "$NOPY"
+for d in "$NOPY" "$NOPERL" "$NOPYT"; do
+  for b in jq tr sed cat dirname uname perl python3; do rm -f "$d/$b"; done
+  rmdir "$d"
+done
 # fixture cleanup: only the dirs created above, only with the expected name
-for d in "$SROOT" "$SOUT"; do
+for d in "$SROOT" "$SOUT" "$RA" "$RG" "$RF" "$RN" "$RW"; do
   case "$d" in */serena-hook-test.*) rm -rf "$d" ;; esac
 done
 

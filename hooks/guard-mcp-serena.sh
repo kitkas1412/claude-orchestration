@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Global PreToolUse guard for Serena MCP tools (mcp__serena__*), main session AND subagents. Exit 2 = block. Requires jq.
 # Default-deny: only the four symbol read tools pass, so unknown future Serena tools are blocked.
-# Path-like arguments must stay inside the project (symlinks resolved) and away from secrets. Defense in depth, NOT a sandbox.
+# Path-like arguments must exist, stay inside the project (symlinks resolved) and away from secrets. Defense in depth, NOT a sandbox.
 set -f
 command -v jq >/dev/null 2>&1 || { echo "BLOCKED: jq is required by guard-mcp-serena" >&2; exit 2; }
 INPUT=$(cat)
@@ -33,20 +33,41 @@ BAD=$(printf '%s' "$INPUT" | jq -r "[$SEL | select(. != null and (type != \"stri
 PATHS=$(printf '%s' "$INPUT" | jq -r "$SEL | select(type == \"string\")") || { echo "BLOCKED: guard-mcp-serena could not parse its JSON input" >&2; exit 2; }
 [ -z "$PATHS" ] && exit 0
 
-# Project root: the same directory Serena picks with --project-from-cwd.
-ROOT=${CLAUDE_PROJECT_DIR:-}
-[ -z "$ROOT" ] && ROOT=$(printf '%s' "$INPUT" | jq -r 'if (.cwd | type) == "string" then .cwd else empty end')
-[ -z "$ROOT" ] && deny "cannot determine the project root"
-
+# Real path of an existing file or directory (symlinks resolved). Fails if it does not exist.
+# On Darwin perl goes first: /usr/bin/python3 may be the Xcode shim.
+resolve_perl() { command -v perl >/dev/null 2>&1 && [ -e "$1" ] && perl -MCwd=realpath -e 'my $p = realpath($ARGV[0]); defined $p or exit 1; print "$p\n"' "$1" 2>/dev/null; }
+resolve_py() { command -v python3 >/dev/null 2>&1 && python3 -I -c 'import os,sys;print(os.path.realpath(sys.argv[1], strict=True))' "$1" 2>/dev/null; }
 resolve() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null && return 0
+  if [ "$(uname -s)" = Darwin ]; then
+    resolve_perl "$1" || resolve_py "$1"
+  else
+    resolve_py "$1" || resolve_perl "$1"
   fi
-  if command -v perl >/dev/null 2>&1; then
-    perl -MCwd=realpath -e 'my $p = realpath($ARGV[0]); if (!defined $p) { my $d = $ARGV[0]; $d =~ s{/[^/]*$}{}; my $r = realpath($d); exit 1 unless defined $r; my ($b) = $ARGV[0] =~ m{([^/]*)$}; $p = "$r/$b"; } print "$p\n"' "$1" 2>/dev/null && return 0
-  fi
-  return 1
 }
+
+# Project root, found like Serena 1.3.0 find_project_root: starting at $CLAUDE_PROJECT_DIR (else the input cwd),
+# the first ancestor with .serena/project.yml, else the first with .git (file or directory), else the start directory.
+START=${CLAUDE_PROJECT_DIR:-}
+[ -z "$START" ] && START=$(printf '%s' "$INPUT" | jq -r 'if (.cwd | type) == "string" then .cwd else empty end')
+[ -z "$START" ] && deny "cannot determine the project root"
+START=$(resolve "$START") || deny "cannot resolve the project root"
+[ -z "$START" ] && deny "cannot resolve the project root"
+RR=""
+D=$START
+while :; do
+  [ -f "$D/.serena/project.yml" ] && { RR=$D; break; }
+  [ "$D" = / ] && break
+  D=$(dirname "$D")
+done
+if [ -z "$RR" ]; then
+  D=$START
+  while :; do
+    [ -e "$D/.git" ] && { RR=$D; break; }
+    [ "$D" = / ] && break
+    D=$(dirname "$D")
+  done
+fi
+[ -z "$RR" ] && RR=$START
 
 # Secret-looking paths (mirrors the Read deny rules). Argument is lowercased and relative.
 secret() {
@@ -62,9 +83,6 @@ secret() {
   esac
 }
 
-RR=$(resolve "$ROOT") || deny "cannot resolve the project root"
-[ -z "$RR" ] && deny "cannot resolve the project root"
-
 while IFS= read -r P; do
   [ -z "$P" ] && continue
   L=$(printf '%s' "$P" | tr '[:upper:]' '[:lower:]' | sed -e 's#//*#/#g')
@@ -74,7 +92,7 @@ while IFS= read -r P; do
     ..|../*|*/..|*/../*)                       deny "path leaves the project ($P)" ;;
   esac
   secret "$L" "$P"
-  R=$(resolve "$RR/$P") || deny "cannot resolve path ($P)"
+  R=$(resolve "$RR/$P") || deny "path does not exist or cannot be resolved ($P)"
   case "$R" in
     "$RR") ;;
     "$RR"/*) secret "$(printf '%s' "${R#"$RR"/}" | tr '[:upper:]' '[:lower:]')" "$P" ;;

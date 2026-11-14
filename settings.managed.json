@@ -114,7 +114,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*serena.*",
+        "matcher": "mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*",
         "hooks": [
           {
             "type": "command",

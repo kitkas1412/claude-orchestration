@@ -113,8 +113,8 @@ for sf in ('settings.managed.json', 'project/settings.project.json'):
 sp = ROOT + '/settings.managed.json'
 if os.path.isfile(sp):
     pre = json.load(open(sp, encoding='utf-8')).get('hooks', {}).get('PreToolUse', [])
-    if not any(g.get('matcher') == 'mcp__.*serena.*' and any(h.get('command', '').endswith('/guard-mcp-serena.sh') for h in g.get('hooks', [])) for g in pre):
-        errors.append('settings.managed.json: guard-mcp-serena.sh not registered with matcher mcp__.*serena.*')
+    if not any(g.get('matcher') == 'mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*' and any(h.get('command', '').endswith('/guard-mcp-serena.sh') for h in g.get('hooks', [])) for g in pre):
+        errors.append('settings.managed.json: guard-mcp-serena.sh not registered with matcher mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*')
     if not pre or not any(h.get('command', '').endswith('/filter-test-output.sh') for h in pre[-1].get('hooks', [])):
         errors.append('settings.managed.json: filter-test-output.sh must be the last PreToolUse entry')
 hp = ROOT + '/hooks/guard-mcp-serena.sh'
