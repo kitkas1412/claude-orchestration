@@ -25,6 +25,8 @@ Checklist:
 - Pagination, filtering, and idempotency are addressed where relevant.
 - Examples match the schema.
 
+Keep the report under about 25 lines. Put long lists, logs or tables in a file under the session scratchpad (or $TMPDIR) and return its path instead.
+
 Final report (concise English):
 STATUS: DONE | PARTIAL | BLOCKED
 SUMMARY: the contract change in 2-4 lines

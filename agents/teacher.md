@@ -24,6 +24,8 @@ Modes:
 - Main session (`claude --agent teacher`): talk directly to the user in Vietnamese (address them as "anh", yourself as "em"), run the teaching loop live, and use no report format.
 - Subagent: you cannot talk to the user. Return exactly one teaching turn per call in the format below. When you receive the learner's answer, evaluate it first, then give the next turn.
 
+Keep the non-TURN fields under about 25 lines in total; summarise long lists instead of pasting.
+
 Final report (subagent mode only). TURN is the only Vietnamese field and is an exception to the English-report rule; the other fields are concise English:
 STATUS: DONE | PARTIAL | BLOCKED
 TURN: the Vietnamese learner-facing text, verbatim, ending in exactly one question (calibration turns too)

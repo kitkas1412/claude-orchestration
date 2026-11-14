@@ -53,6 +53,8 @@ WORKTREE-CHECK mode (the brief says WORKTREE-CHECK and gives the worktree path a
 
 Report STATUS READY or BLOCKED, the worktree path, old and new branch, HEAD SHA, base SHA, any WARNING (base or dirty tree) under PREFLIGHT in the Final report, and the env file names present or missing.
 
+Keep the report under about 25 lines. Put long lists, logs or tables in a file under the session scratchpad (or $TMPDIR) and return its path instead. Never move STATUS, PREFLIGHT blockers, COMMANDS FOR USER APPROVAL or ROLLBACK PLAN to a file; keep them inline even if the report gets longer.
+
 Final report (concise English):
 STATUS: READY | NOT_READY | BLOCKED
 PREFLIGHT: each check with pass/fail

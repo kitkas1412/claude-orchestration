@@ -24,6 +24,8 @@ Checklist:
 - No logic, dependency, or secret-bearing file touched.
 - Every occurrence named in the brief is handled.
 
+Keep the report under about 25 lines; summarise long lists and cite file:line instead of pasting.
+
 Final report (concise English):
 STATUS: DONE | BLOCKED
 SUMMARY: one line

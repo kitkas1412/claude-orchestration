@@ -123,8 +123,20 @@ The safety hooks block direct edits to `~/.claude`, so changes flow one way. Lin
 - Opt out for a session with `CLAUDE_FILTER_OUTPUT=0` in the environment. `install.sh` never removes hook entries, so to disable the hook for good, delete its entry from `~/.claude/settings.json` by hand.
 - Your own allow rules such as `Bash(npm test:*)` may no longer match the rewritten command, so those commands may prompt. Do not add a wildcard allow rule for the wrapper: it would auto-approve any command that pipes into the filter. If prompts are a problem, set `CLAUDE_FILTER_OUTPUT=0` to disable the rewrite.
 - In auto mode, the Claude Code documentation says a rewritten call without a `permissionDecision` can be denied by auto mode. This is not verified in practice; use the opt-out if you see denials.
-- Separately, agent frontmatter sets `effort` to `low` for `explorer`, `test-runner` and `quick-fixer`, and to `medium` for `doc-writer`. `tests/lint.py` accepts `low`, `medium`, `high`, `xhigh` and `max`.
+- Separately, agent frontmatter sets `effort` to `low` for `explorer`, `test-runner`, `quick-fixer` and `skill-scout`, and to `medium` for `doc-writer` and `orchestrator`. `tests/lint.py` accepts `low`, `medium`, `high`, `xhigh` and `max`.
 - `release-manager` no longer preloads the `git-workflow` skill. It reads the skill when it does commit, push, PR or merge work; BRANCH mode does not need it. The publish and merge steps are in `agents/release-manager.md`.
+- Agent final reports are capped at about 25 lines. Long material goes to a scratchpad file; read-only agents summarise instead.
+- Slow test suites run once, through `test-runner`, after the implementers batch their fixes. Implementers run targeted tests only and do not poll with `pgrep` or `sleep`.
+- At most one re-audit per task, unless High or Critical findings remain. Follow-up work goes to the same agent with SendMessage where possible.
+
+### Measuring
+
+Compare `/usage` and `/context` before and after a change, on the same kind of task.
+
+- `/usage` shows the session cost, tokens per model and the `Prompt cache (main)` line. On subscriptions it also attributes usage to skills, subagents and MCP servers.
+- `/context` shows what fills the main context.
+
+`CLAUDE.md`, `.claude/rules/*.md`, agent prompts, preloaded skills and agent and skill descriptions are loaded into context automatically. `ORCHESTRATION.md` and `README.md` are not; `CLAUDE.md` does not import them.
 
 ## Serena (optional, read-only)
 
