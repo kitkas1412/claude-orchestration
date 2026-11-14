@@ -36,7 +36,9 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh` and `guard-mcp-playwright.sh`, `rules/orchestration.md` (`project/rules-preamble.md` followed by this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh` and `guard-mcp-playwright.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- The global install adds `"claudeMdExcludes": ["**/.claude/rules/orchestration-global.md"]` to `~/.claude/settings.json`, so a local session loads the global rules once, from `~/.claude/CLAUDE.md`. The export strips that setting, because cloud sessions do not read `~/.claude` and still need `orchestration-global.md`.
+- Limits: the glob excludes any file named `orchestration-global.md` in any project. It assumes `~/.claude/CLAUDE.md` holds the global rules; after a partial install without it, local sessions get no global rules. The settings merge takes `claudeMdExcludes` from `settings.managed.json`, so it replaces any existing user value for that key.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
 - Never exported: `git-publish.sh` and `apple-design`. No backup is made.
 - The target `CLAUDE.md`, `.claude/worktrees` and `.claude/settings.local.json` are left alone. Settings merge as for `~/.claude`: entries are only added. Running it again is safe and updates the files.
@@ -123,6 +125,8 @@ The safety hooks block direct edits to `~/.claude`, so changes flow one way. Lin
 - Opt out for a session with `CLAUDE_FILTER_OUTPUT=0` in the environment. `install.sh` never removes hook entries, so to disable the hook for good, delete its entry from `~/.claude/settings.json` by hand.
 - Your own allow rules such as `Bash(npm test:*)` may no longer match the rewritten command, so those commands may prompt. Do not add a wildcard allow rule for the wrapper: it would auto-approve any command that pipes into the filter. If prompts are a problem, set `CLAUDE_FILTER_OUTPUT=0` to disable the rewrite.
 - In auto mode, the Claude Code documentation says a rewritten call without a `permissionDecision` can be denied by auto mode. This is not verified in practice; use the opt-out if you see denials.
+- Round 2: `explorer`, `test-runner`, `researcher` and `skill-scout` set `omitClaudeMd: true`, so Claude Code does not load the project `CLAUDE.md`, `.claude/rules/*.md` or `~/.claude/CLAUDE.md` into them (checked on Claude Code 2.1.325). Each agent restates a compact safety line, and the orchestrator puts project conventions and commands into their briefs. This needs Claude Code 2.1.271 or newer.
+- Round 2: the global rules are split out of the project preamble (`orchestration-global.md`) and excluded locally by `claudeMdExcludes`, so a local session does not load them twice. See the export notes above.
 - Separately, agent frontmatter sets `effort` to `low` for `explorer`, `test-runner`, `quick-fixer` and `skill-scout`, and to `medium` for `doc-writer` and `orchestrator`. `tests/lint.py` accepts `low`, `medium`, `high`, `xhigh` and `max`.
 - `release-manager` no longer preloads the `git-workflow` skill. It reads the skill when it does commit, push, PR or merge work; BRANCH mode does not need it. The publish and merge steps are in `agents/release-manager.md`.
 - Agent final reports are capped at about 25 lines. Long material goes to a scratchpad file; read-only agents summarise instead.
@@ -136,7 +140,7 @@ Compare `/usage` and `/context` before and after a change, on the same kind of t
 - `/usage` shows the session cost, tokens per model and the `Prompt cache (main)` line. On subscriptions it also attributes usage to skills, subagents and MCP servers.
 - `/context` shows what fills the main context.
 
-`CLAUDE.md`, `.claude/rules/*.md`, agent prompts, preloaded skills and agent and skill descriptions are loaded into context automatically. `ORCHESTRATION.md` and `README.md` are not; `CLAUDE.md` does not import them.
+`CLAUDE.md`, `.claude/rules/*.md`, agent prompts, preloaded skills and agent and skill descriptions are loaded into context automatically (subagents with `omitClaudeMd` get none of them). `ORCHESTRATION.md` and `README.md` are not; `CLAUDE.md` does not import them.
 
 ## Serena (optional, read-only)
 

@@ -59,7 +59,7 @@ cp "$A/.claude/settings.local.json" "$ROOT/local.expected"
 assert "export into git repo succeeds" bash "$INSTALL" --project "$A"
 C="$A/.claude"
 
-for f in ORCHESTRATION.md rules/orchestration.md settings.json .orchestration-manifest \
+for f in ORCHESTRATION.md rules/orchestration.md rules/orchestration-global.md settings.json .orchestration-manifest \
          agents/orchestrator.md hooks/guard-bash.sh hooks/guard-write.sh \
          hooks/readonly-bash.sh hooks/stop-verify-reminder.sh; do
   assert "exists: $f" test -f "$C/$f"
@@ -115,8 +115,11 @@ leaks="$(grep -rnE '~/\.claude/|<HOME>/\.claude/' "$C/agents" "$C/skills" "$C/OR
 eq "no user-level .claude paths remain (outside git-publish/plugins)" "" "$leaks"
 assert "orchestrator.md uses project hook path" \
   grep -qF '"$CLAUDE_PROJECT_DIR"/.claude/hooks/stop-verify-reminder.sh' "$C/agents/orchestrator.md"
-assert "rules/orchestration.md includes CLAUDE.md content" \
-  grep -qF "$(grep -m1 -v '^[[:space:]]*$' "$REPO/CLAUDE.md")" "$C/rules/orchestration.md"
+assert "rules/orchestration.md has the preamble" \
+  grep -qF "$(grep -m1 -v '^[[:space:]]*$' "$REPO/project/rules-preamble.md")" "$C/rules/orchestration.md"
+assert "rules/orchestration-global.md includes CLAUDE.md content" \
+  grep -qF "$(grep -m1 -v '^[[:space:]]*$' "$REPO/CLAUDE.md")" "$C/rules/orchestration-global.md"
+assert_not "exported settings has no claudeMdExcludes" jq -e 'has("claudeMdExcludes")' "$C/settings.json"
 
 # ---- 3. exported guards ----------------------------------------------------
 eq "exported guard-bash blocks git push" 2 "$(run_guard "$A" guard-bash.sh '{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}')"
