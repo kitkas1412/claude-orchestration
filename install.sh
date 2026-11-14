@@ -126,7 +126,7 @@ build_project_stage() {
 
   MANAGED="$STAGE/settings.managed.json"
   jq --slurpfile p "$REPO/project/settings.project.json" --argjson setagent "$SET_AGENT" '
-    del(.model, .permissions.defaultMode)
+    del(.model, .agent, .permissions.defaultMode)
     | .hooks.PreToolUse |= map(.hooks |= map(
         .command |= sub("^\\$HOME/\\.claude/hooks/(?<n>.*)$"; "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/\(.n)")))
     | .permissions.deny += ($p[0].permissions.deny - .permissions.deny)

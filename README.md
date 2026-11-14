@@ -40,7 +40,7 @@ bash install.sh --project <repo> [--set-agent]
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
 - Never exported: `git-publish.sh` and `apple-design`. No backup is made.
 - The target `CLAUDE.md`, `.claude/worktrees` and `.claude/settings.local.json` are left alone. Settings merge as for `~/.claude`: entries are only added. Running it again is safe and updates the files.
-- `--set-agent` adds `"agent": "orchestrator"`, so the orchestrator is the main agent. This also applies to local sessions in that repository.
+- `--set-agent` adds `"agent": "orchestrator"`, so the orchestrator is the main agent. The global install already sets this for local sessions, so the flag matters for cloud sessions (they do not read `~/.claude`) and for teammates without the global install. Without it the export strips `agent`.
 - Locally, both `~/.claude` and the project guards run. The duplication is harmless. A project agent overrides a user agent of the same name.
 - Do not edit the exported files by hand. Change the source here and export again.
 - Refused: a symlink under `<repo>/.claude` (the target itself, `settings.json`, `ORCHESTRATION.md`, `.orchestration-manifest`, or anything inside `agents/`, `skills/`, `hooks/`, `rules/`), and a target `settings.json` with `disableAllHooks: true`. Existing `permissions.allow` entries, `permissions.defaultMode: bypassPermissions` and hooks not managed by the export are kept and listed as a WARNING.
@@ -243,7 +243,7 @@ apps/web/.env.local
 - A dev server in the worktree can clash on ports with one running in the main checkout.
 - The worktree and its branch stay after the task. To resume, ask the orchestrator for it or start Claude Code inside it. The orchestrator calls `ExitWorktree` only when you ask, and keeps the worktree unless you ask to remove it and the work is pushed or merged. After a remove the renamed branch remains: delete it with `git branch -d <branch>` yourself (the ExitWorktree message may show the old name).
 - To clean up yourself after the branch is merged, run `git worktree remove <path>` in your own terminal. Agents never run `git worktree add` or `move`.
-- You can create the worktree yourself instead: `claude -w <name> --agent orchestrator`. A session already inside `.claude/worktrees/` always uses WORKTREE mode; for an unrelated new task, start a new session.
+- You can create the worktree yourself instead: `claude -w <name>` (after the global install the main session is already the orchestrator; `--agent orchestrator` also works). A session already inside `.claude/worktrees/` always uses WORKTREE mode; for an unrelated new task, start a new session.
 - `.worktreeinclude` and the files it names must exist in the main checkout when the worktree is created.
 - Only worktrees created by Claude Code copy these files. A plain `git worktree add` does not.
 - The base is the remote default branch unless the Claude Code setting `worktree.baseRef` says otherwise (`fresh` is the default, `head` is the alternative).
@@ -259,7 +259,7 @@ apps/web/.env.local
 | `skills/` | `~/.claude/skills/` | Custom skills |
 | `third_party/skills/` | `~/.claude/skills/` | Reviewed copies of external skills |
 | `third_party/licenses/` | Not installed | Licenses for those skills |
-| `settings.managed.json` | Merged into `~/.claude/settings.json` | Permissions, hooks and model |
+| `settings.managed.json` | Merged into `~/.claude/settings.json` | Permissions, hooks, model and default agent |
 | `project/` | Not installed | Inputs for `install.sh --project`: rules preamble and project settings |
 | `cloud/setup.sh` | Not installed | Experimental setup script for the cloud environment |
 | `.claude/` | Not in the repository by default | Optional export, generated with `bash install.sh --project .` and committed by you; do not edit; check with `bash tests/check-project-export.sh` |
@@ -269,6 +269,14 @@ apps/web/.env.local
 ## How settings merge
 
 Values in `settings.managed.json` win. Other settings on the machine stay. `permissions.deny` and `hooks` only gain entries, and the installer removes nothing.
+
+### Default agent
+
+The global install sets `"agent": "orchestrator"` in `~/.claude/settings.json`, so every local `claude` session starts as the orchestrator: opus, no Edit, Write or Bash in the main thread, and the Stop hook reminder. The header shows `@orchestrator`. This also applies to non-interactive runs (`claude -p`, scripts, wrappers), which then also have no Edit, Write or Bash in the main thread; use `claude --agent <name>` for such runs.
+
+- One session: `claude --agent <other-agent>` overrides the setting.
+- One project: set a different `agent` in that project's `.claude/settings.local.json`.
+- Everywhere: delete the `"agent"` line from `~/.claude/settings.json`. The next `bash install.sh` writes it back.
 
 ## Third-party skills
 

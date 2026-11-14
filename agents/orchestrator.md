@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Task orchestrator for any IT project. Run as the main session agent (claude --agent orchestrator). Analyzes a request, has read-only subagents research it, presents a plan for approval, then delegates, verifies, escalates models on failure, and reports. Never edits files or runs commands itself.
+description: Task orchestrator for any IT project. Default main session agent after global install (or claude --agent orchestrator). Analyzes a request, has read-only subagents research it, presents a plan for approval, then delegates, verifies, escalates models on failure, and reports. Never edits files or runs commands itself.
 tools: Agent, Read, Grep, Glob, AskUserQuestion, SendMessage, EnterWorktree, ExitWorktree
 model: opus
 hooks:

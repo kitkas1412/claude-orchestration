@@ -6,8 +6,8 @@ User-level multi-agent setup. Claude Code 2.1.319. Permission mode: `auto`.
 
 | Need | Command |
 | --- | --- |
-| A session dedicated to orchestration | `claude --agent orchestrator` |
-| Orchestrate one task in a normal session | `/orchestrate <task>` |
+| A session dedicated to orchestration | `claude` (after global install the orchestrator is the default agent; `claude --agent orchestrator` also works) |
+| Orchestrate one task in a session started with another agent or without the `agent` setting | `/orchestrate <task>` |
 | Learn a subject in a live dialogue | `claude --agent teacher` |
 | Onboard a repository | `/init-project-orchestration [path]` |
 
@@ -154,6 +154,12 @@ Cloud sessions load only the committed `.claude/` of the repository, not `~/.cla
 - Not verified: a REST merge through the cloud proxy; the repository config check under cloud-added git config entries; `HOME=/root`; whether `/root/.claude` hooks load in cloud. `~/learning` is ephemeral there.
 
 ## Changelog
+
+### 1.10.0 - 2026-11-14
+
+- `settings.managed.json` now sets `"agent": "orchestrator"`, so the global install makes the orchestrator the default main-session agent for every local `claude` session (opus, no Edit/Write/Bash in the main thread, Stop hook reminder). This also applies to non-interactive runs (`claude -p`, scripts, wrappers), which then also have no Edit/Write/Bash in the main thread; use `claude --agent <name>` for such runs.
+- To turn it off, delete the `"agent"` line from `~/.claude/settings.json`; the next `bash install.sh` writes it back. Override per project with `agent` in `.claude/settings.local.json`, or per session with `claude --agent <name>`.
+- `install.sh --project` still strips `agent` unless `--set-agent` is given. Cloud sessions do not read `~/.claude`, so cloud still needs `install.sh --project <repo> --set-agent` committed in the repository.
 
 ### 1.9.1 - 2026-11-14
 
