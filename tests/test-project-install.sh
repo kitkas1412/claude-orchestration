@@ -90,8 +90,7 @@ assert "hook commands use CLAUDE_PROJECT_DIR" \
 assert_not "no \$HOME hook commands left" grep -q '\$HOME/\.claude/hooks' "$C/settings.json"
 assert_not "no model key" jq -e 'has("model")' "$C/settings.json"
 assert_not "no defaultMode" jq -e '.permissions | has("defaultMode")' "$C/settings.json"
-for d in 'Edit(./.claude/hooks/**)' 'Write(./.claude/hooks/**)' \
-         'Edit(./.claude/settings.json)' 'Write(./.claude/settings.json)'; do
+for d in 'Edit(./.claude/hooks/**)' 'Edit(./.claude/settings.json)'; do
   assert "deny contains $d" jq -e --arg d "$d" '.permissions.deny | index($d) != null' "$C/settings.json"
 done
 assert_not "no agent key without --set-agent" jq -e 'has("agent")' "$C/settings.json"
@@ -214,10 +213,8 @@ assert_not "no repo-level apple-design path" grep -rqF '<REPO_ROOT>/.claude/skil
 assert_not "no repo-level settings.json from user-level text" \
   grep -rqF '<REPO_ROOT>/.claude/settings.json' "$C/agents" "$C/skills" "$C/ORCHESTRATION.md"
 assert "preamble notes apple-design" grep -qF 'apple-design is not exported' "$C/rules/orchestration.md"
-for d in 'Edit(./.claude/settings.local.json)' 'Write(./.claude/settings.local.json)' \
-         'Edit(./.claude/rules/**)' 'Write(./.claude/rules/**)' \
-         'Edit(./.claude/agents/**)' 'Write(./.claude/agents/**)' \
-         'Edit(./.claude/skills/**)' 'Write(./.claude/skills/**)'; do
+for d in 'Edit(./.claude/settings.local.json)' 'Edit(./.claude/rules/**)' \
+         'Edit(./.claude/agents/**)' 'Edit(./.claude/skills/**)'; do
   assert "deny contains $d" jq -e --arg d "$d" '.permissions.deny | index($d) != null' "$C/settings.json"
 done
 

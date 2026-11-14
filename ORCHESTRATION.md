@@ -155,6 +155,13 @@ Cloud sessions load only the committed `.claude/` of the repository, not `~/.cla
 
 ## Changelog
 
+### 1.9.1 - 2026-11-14
+
+- Removed every `Write(...)` entry from `permissions.deny` in `settings.managed.json` and `project/settings.project.json`. Claude Code warns that `Write(...)` rules are not matched by file permission checks; `Edit(path)` rules already apply to all built-in file-editing tools, Write included, and every removed entry had an identical `Edit(...)` entry, so protection is unchanged. `tests/lint.py` now errors on any `Write(` deny entry and expects the `Edit(...)` forms of the `.serena/**` paths.
+- `install.sh` never removes entries: delete the old `Write(...)` entries from `~/.claude/settings.json` by hand to silence the warning. Re-exported project `.claude/settings.json` files keep them too until removed by hand.
+- `hooks/guard-mcp-serena.sh` now accepts absolute path arguments (subagent briefs use absolute paths) when they have no `..` or backslash, exist, and resolve to the project root or below; the same secret and outside-root checks then run on the resolved path. `~` paths and absolute paths outside the root stay denied. The 8 Serena agents are told to pass `relative_path` relative to the repository root.
+- Added `.serena/` to `.gitignore`. README documents setting `language_servers:` in `.serena/project.yml` for repositories with several languages.
+
 ### 1.9.0 - 2026-11-13
 
 - Added optional read-only support for Serena (MCP, v2.1.0, installed by the user; see `README.md`). `explorer`, `architect`, `code-reviewer`, `security-auditor`, `debugger`, `implementer`, `test-writer` and `performance-optimizer` now list `mcp__serena__find_symbol`, `find_referencing_symbols`, `get_symbols_overview` and `find_implementations` in `tools:` (`find_declaration` is not listed and is denied, because it reads any path without containment) and prefer them when available, unless the brief says `SERENA: off`. Without Serena installed nothing changes (an unknown MCP tool in `tools:` is absent; checked on Claude Code 2.1.323).

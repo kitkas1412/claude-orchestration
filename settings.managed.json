@@ -87,9 +87,7 @@
       "mcp__serena__serena_info",
       "mcp__serena__get_current_config",
       "Edit(./.serena/**)",
-      "Write(./.serena/**)",
-      "Edit(**/.serena/**)",
-      "Write(**/.serena/**)"
+      "Edit(**/.serena/**)"
     ],
     "defaultMode": "auto"
   },

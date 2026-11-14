@@ -18,7 +18,7 @@ SERENA_DENIED = (
     'activate_project', 'get_current_config', 'open_dashboard', 'remove_project', 'query_project', 'list_queryable_projects', 'serena_repl',
     'jet_brains_move', 'jet_brains_safe_delete', 'jet_brains_rename', 'jet_brains_debug', 'jet_brains_run_inspections', 'jet_brains_list_inspections',
 )
-SERENA_DENY_PATHS = ('Edit(./.serena/**)', 'Write(./.serena/**)', 'Edit(**/.serena/**)', 'Write(**/.serena/**)')
+SERENA_DENY_PATHS = ('Edit(./.serena/**)', 'Edit(**/.serena/**)')
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -105,6 +105,9 @@ for sf in ('settings.managed.json', 'project/settings.project.json'):
     for p in SERENA_DENY_PATHS:
         if p not in deny:
             errors.append('%s: deny list lacks %s' % (sf, p))
+    for d in deny:
+        if d.startswith('Write('):
+            errors.append('%s: redundant %s (Edit(...) covers Write; use Edit)' % (sf, d))
     if 'mcp__serena' in deny or 'mcp__serena__*' in deny:
         errors.append('%s: must not deny the whole serena server' % sf)
     for t in sorted(SERENA_TOOLS & set(deny)):
