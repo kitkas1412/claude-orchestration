@@ -2,6 +2,8 @@
 
 Use only when the project has no tokens, theme or component library. Keep it small: create what the current feature needs, not a full system. Create the token, theme, component and doc files below only if the brief allows them (the agent works inside assigned files); otherwise return the planned file list under OPEN and stop with PARTIAL.
 
+If the brief carries `FIGMA` or `FIGMA-WRITE`, follow `skills/figma-workflow/SKILL.md` for the Figma side.
+
 ## 0. Check the brief for design direction
 
 Direction means brand or product identity, tone, and whether light, dark or both are wanted. If the brief has none, do not invent it. Stop and return a proposal under OPEN (a short palette, type and tone suggestion with reasons) with status BLOCKED, or PARTIAL if some work is possible without it. Continue only once direction is supplied.
