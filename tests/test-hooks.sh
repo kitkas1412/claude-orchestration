@@ -1283,6 +1283,201 @@ printf '%s' '{"tool_name":"mcp__context7__query-docs","tool_input":{"libraryId":
 if [ "$got" = 2 ]; then echo "ok    [guard-mcp-context7.sh] jq missing"; else echo "FAIL  [guard-mcp-context7.sh] jq missing: want=2 got=$got"; fail=1; fi
 rmdir "$NOJQ5"
 
+# ---- guard-mcp-figma.sh (allowlist of Figma tools; credit-spending tools denied; strict arg shapes; use_figma code tripwires; fail closed) ----
+FGHOOK="$HOOKS/guard-mcp-figma.sh"
+fg_report() { # fg_report <want> <got> <stderr> <label>
+  local want=$1 got=$2 err=$3 label=$4
+  if [ "$got" = "$want" ] && { [ "$want" = 0 ] && [ -z "$err" ] || { [ "$want" != 0 ] && grep -q '^BLOCKED by guard-mcp-figma' <<<"$err"; }; }; then
+    echo "ok    [guard-mcp-figma.sh] $label"
+  else
+    echo "FAIL  [guard-mcp-figma.sh] want=$want got=$got: $label stderr=$err"; fail=1
+  fi
+}
+fg() { # fg <want exit> <tool name> <tool_input JSON>
+  local want=$1 tool=$2 ti=$3 got err in
+  in=$(jq -n --arg t "$tool" --argjson i "$ti" '{tool_name:$t,tool_input:$i}') || { echo "FAIL  bad test JSON: $tool $ti"; fail=1; return; }
+  err=$(printf '%s' "$in" | "$FGHOOK" 2>&1 >/dev/null); got=$?
+  fg_report "$want" "$got" "$err" "${tool:0:60} ${ti:0:100}"
+}
+fgcode() { # fgcode <want exit> <code> [label]: use_figma with valid other args
+  local want=$1 code=$2 label=${3:-code} in got err
+  in=$(jq -n --arg c "$code" --arg k "$FGK" '{tool_name:"mcp__figma__use_figma",tool_input:{fileKey:$k,code:$c,description:"d"}}')
+  err=$(printf '%s' "$in" | "$FGHOOK" 2>&1 >/dev/null); got=$?
+  fg_report "$want" "$got" "$err" "use_figma $label"
+  if [ "$want" = 2 ] && [ -n "$code" ] && grep -qF -- "${code:0:20}" <<<"$err"; then echo "FAIL  [guard-mcp-figma.sh] deny echoed the code: $label"; fail=1; fi
+}
+fg_raw() { # fg_raw <want exit> <raw stdin>
+  local want=$1 input=$2 got err
+  err=$(printf '%s' "$input" | "$FGHOOK" 2>&1 >/dev/null); got=$?
+  fg_report "$want" "$got" "$err" "raw input: ${input:0:100}"
+}
+FGK=abcDEF1234567890XYZabc
+FGS=123e4567-e89b-12d3-a456-426614174000
+FG=mcp__figma__
+GH='ghp_'; FD='figd_'; PEM='-----BEG'; UCU=user; UCP=pass; UCW=pass'word'
+UCS=:; UCA=@; UCSCHEME='https:'; UCURL="${UCSCHEME}/"/"${UCU}${UCS}${UCP}${UCA}host.example"
+# allowed
+fg 0 ${FG}whoami '{}'
+fg 0 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"Review header\"}"
+fg 0 ${FG}get_screenshot "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"sessionId\":\"$FGS\",\"maxDimension\":1024}"
+fg 0 ${FG}get_screenshot "{\"fileKey\":\"$FGK\",\"nodeId\":\"12-34\"}"
+fg 0 ${FG}get_metadata "{\"fileKey\":\"$FGK\"}"
+fg 0 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"I1:2;3:4\"}"
+fg 0 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"T1:2;3:4;5:6\"}"
+fg 0 ${FG}get_design_context "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"skillNames\":\"figma-design-to-code\",\"forceCode\":true}"
+fg 0 ${FG}get_variable_defs "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\"}"
+fg 0 ${FG}get_libraries "{\"fileKey\":\"$FGK\",\"offset\":0}"
+fg 0 ${FG}get_code_connect_map "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"codeConnectLabel\":\"React\"}"
+fg 0 ${FG}search_design_system "{\"fileKey\":\"$FGK\",\"queries\":[{\"entity\":\"component\",\"query\":\"button\"}]}"
+fg 0 ${FG}create_new_file '{"fileName":"Demo","planKey":"team::123","editorType":"design"}'
+fg 0 ${FG}create_new_file '{"fileName":"Demo","planKey":"organization::9","editorType":"figjam"}'
+fg 0 ${FG}use_figma "{\"fileKey\":\"$FGK\",\"code\":\"const f = figma.createFrame();\\nf.name = 'Card';\\nconst token = vars[0];\",\"description\":\"Create card\",\"sessionId\":\"$FGS\",\"skillNames\":\"figma-use, resource:figma-generate-design\"}"
+# fileKey boundaries
+fg 0 ${FG}get_libraries "{\"fileKey\":\"$(printf 'a%.0s' $(seq 1 128))\"}"
+fg 2 ${FG}get_libraries "{\"fileKey\":\"$(printf 'a%.0s' $(seq 1 129))\"}"
+fg 0 ${FG}get_libraries "{\"fileKey\":\"$(printf 'a%.0s' $(seq 1 22))\"}"
+fg 2 ${FG}get_libraries "{\"fileKey\":\"$(printf 'a%.0s' $(seq 1 21))\"}"
+fg 2 ${FG}get_screenshot '{"fileKey":"../etc/passwd","nodeId":"1:2"}'
+fg 2 ${FG}get_libraries "{\"fileKey\":\"${FGK}-x\"}"
+fg 2 ${FG}get_libraries '{"fileKey":12345678901}'
+# nodeId forms
+fg 2 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"T1:2;3:4\"}"
+fg 2 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"T1:2;3:4;5:6;7:8\"}"
+fg 2 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2;3:4\"}"
+fg 2 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"abc\"}"
+fg 2 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\\n\"}"
+fg 2 ${FG}get_metadata "{\"fileKey\":\"$FGK\",\"nodeId\":12}"
+# sessionId, planKey, editorType, other shapes
+fg 2 ${FG}get_screenshot "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"sessionId\":\"abc\"}"
+fg 2 ${FG}create_new_file '{"fileName":"Demo","planKey":"team:123","editorType":"design"}'
+fg 2 ${FG}create_new_file '{"fileName":"Demo","planKey":"user::123","editorType":"design"}'
+fg 2 ${FG}create_new_file '{"fileName":"Demo","planKey":"team::12a","editorType":"design"}'
+fg 2 ${FG}create_new_file '{"fileName":"Demo","planKey":"team::123","editorType":"sheet"}'
+fg 2 ${FG}get_screenshot "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"maxDimension\":0}"
+fg 2 ${FG}get_screenshot "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"maxDimension\":1.5}"
+fg 2 ${FG}get_design_context "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"forceCode\":\"yes\"}"
+fg 2 ${FG}search_design_system "{\"fileKey\":\"$FGK\",\"queries\":[{\"entity\":\"icon\",\"query\":\"x\"}]}"
+fg 2 ${FG}search_design_system "{\"fileKey\":\"$FGK\",\"queries\":[]}"
+fg 2 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"use ${FD}abcdef\"}"
+# skillNames
+fg 2 ${FG}use_figma "{\"fileKey\":\"$FGK\",\"code\":\"x\",\"description\":\"d\",\"skillNames\":\"evil\"}"
+fg 2 ${FG}use_figma "{\"fileKey\":\"$FGK\",\"code\":\"x\",\"description\":\"d\",\"skillNames\":\"figma-use,evil\"}"
+fg 2 ${FG}use_figma "{\"fileKey\":\"$FGK\",\"code\":\"x\",\"description\":\"d\",\"skillNames\":\"figma-design-to-code\"}"
+# use_figma code: length boundary and tripwires
+fgcode 0 "$(printf 'a%.0s' $(seq 1 50000))" 'code of exactly 50000 chars'
+fgcode 2 "$(printf 'a%.0s' $(seq 1 50001))" 'code of 50001 chars'
+fgcode 2 '' 'empty code'
+fgcode 0 'figma.currentPage.selection = []' 'plain code'
+fgcode 2 "await fetch('https://x')" 'fetch('
+fgcode 2 "await fetch  ('https://x')" 'fetch with space before paren'
+fgcode 2 'const x = new XMLHttpRequest()' 'XMLHttpRequest'
+fgcode 2 "new WebSocket('wss://x')" 'WebSocket'
+fgcode 2 "importScripts('x.js')" 'importScripts'
+fgcode 2 'eval ("1")' 'eval('
+fgcode 2 'new  Function("x")' 'new Function'
+fgcode 2 "const k = '${GH}abc';" 'ghp_ prefix'
+fgcode 2 "const k = '${FD}abc';" 'figd_ prefix'
+fgcode 2 "${PEM}IN PRIVATE KEY" 'PEM header'
+fgcode 2 "const password = 'hunter2'" 'secret-like assignment'
+fgcode 0 'const retrieval = f.retrieval(1); const token = v[0];' 'retrieval( and bare token = v[0] allowed'
+fgcode 2 '(0,eval)("1")' '(0,eval)('
+fgcode 2 'const f = Function("return 1")' 'bare Function('
+fgcode 2 'globalThis.eval("1")' 'globalThis.eval('
+fgcode 2 'window.Function("return 1")' 'window.Function('
+fgcode 0 'const r = node.evaluate(1); x.FunctionName(2);' 'node.evaluate( and x.FunctionName( allowed'
+fgcode 0 "const u = 'https://www.figma.com/design/${FGK}/My-File?node-id=1-2';" 'Figma design URL in code allowed'
+fg 0 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"see https://www.figma.com/design/${FGK}/My-File\"}"
+fgcode 2 'const m = await import("x")' 'import('
+fgcode 2 'await figma.createImageAsync(u)' 'createImageAsync'
+fgcode 2 'await figma.loadAllPagesAsync()' 'loadAllPagesAsync'
+fgcode 2 "n.setPluginData('a','b')" 'setPluginData'
+fgcode 2 "const secret = \"$(printf 'Qx7%.0s' 1 2 3 4 5)\"" 'quoted secret assignment with long value'
+fgcode 2 "const u = '${UCURL}'" 'URL credentials in code'
+# free text: key-word with colon, hex run, base64url run, URL credentials (secrets built from parts)
+HEX32=$(printf 'abcdef01%.0s' 1 2 3 4)
+B64U="$(printf 'Ab1-_%.0s' 1 2 3 4 5 6 7)"
+fg 2 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"${UCW}: x\"}"
+fg 2 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"id $HEX32\"}"
+fg 2 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"id $B64U\"}"
+fg 2 ${FG}create_session "{\"fileKey\":\"$FGK\",\"description\":\"see ${UCURL}\"}"
+fg 2 ${FG}search_design_system "{\"fileKey\":\"$FGK\",\"queries\":[{\"entity\":\"component\",\"query\":\"${UCW}: x\"}]}"
+fg 2 ${FG}search_design_system "{\"fileKey\":\"$FGK\",\"queries\":[{\"entity\":\"component\",\"query\":\"$HEX32\"}]}"
+fg 2 ${FG}create_new_file "{\"fileName\":\"${UCW}: x\",\"planKey\":\"team::1\",\"editorType\":\"design\"}"
+fg 2 ${FG}create_new_file "{\"fileName\":\"$B64U\",\"planKey\":\"team::1\",\"editorType\":\"design\"}"
+# nodeId forms per tool: I and T forms only for get_design_context and get_metadata
+for tl in get_screenshot get_variable_defs get_code_connect_map; do
+  fg 0 ${FG}$tl "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\"}"
+  fg 2 ${FG}$tl "{\"fileKey\":\"$FGK\",\"nodeId\":\"I1:2;3:4\"}"
+  fg 2 ${FG}$tl "{\"fileKey\":\"$FGK\",\"nodeId\":\"T1:2;3:4;5:6\"}"
+done
+fg 0 ${FG}get_design_context "{\"fileKey\":\"$FGK\",\"nodeId\":\"I1:2;3:4\"}"
+fg 0 ${FG}get_design_context "{\"fileKey\":\"$FGK\",\"nodeId\":\"T1:2;3:4;5:6\"}"
+# a denied extra key must not be echoed
+FGX=zq9unikeyname
+fgx_err=$(printf '%s' "{\"tool_name\":\"mcp__figma__whoami\",\"tool_input\":{\"$FGX\":1}}" | "$FGHOOK" 2>&1 >/dev/null); fgx_got=$?
+if [ "$fgx_got" = 2 ] && grep -q '^BLOCKED by guard-mcp-figma' <<<"$fgx_err" && ! grep -qF "$FGX" <<<"$fgx_err"; then echo "ok    [guard-mcp-figma.sh] extra key denied without echoing its name"; else echo "FAIL  [guard-mcp-figma.sh] extra key echo: got=$fgx_got stderr=$fgx_err"; fail=1; fi
+# server and tool name case
+fg 2 mcp__Figma__whoami '{}'
+fg 2 mcp__figma__WHOAMI '{}'
+fg 2 ${FG}weave_find_model '{}'
+fg 2 ${FG}weave_upload_asset '{}'
+# unknown, credit-spending and foreign tools
+fg 2 ${FG}generate_image "{\"fileKey\":\"$FGK\",\"prompt\":\"x\"}"
+fg 2 ${FG}generate_vector_illustration '{}'
+fg 2 ${FG}weave_run_model '{}'
+fg 2 ${FG}get_comments '{}'
+fg 2 ${FG}upload_assets '{}'
+fg 2 ${FG}download_assets '{}'
+fg 2 ${FG}generate_figma_design '{}'
+fg 2 ${FG} '{}'
+fg 2 mcp__plugin_figma_figma__use_figma "{\"fileKey\":\"$FGK\"}"
+fg 2 mcp__figma-desktop__get_screenshot '{}'
+fg 2 mcp__other__whoami '{}'
+fg 2 Bash '{"command":"ls"}'
+# unknown keys, missing required, bad tool_input
+fg 2 ${FG}get_screenshot "{\"fileKey\":\"$FGK\",\"nodeId\":\"1:2\",\"foo\":1}"
+fg 2 ${FG}whoami '{"x":1}'
+fg 2 ${FG}get_screenshot "{\"fileKey\":\"$FGK\"}"
+fg 2 ${FG}use_figma "{\"fileKey\":\"$FGK\",\"code\":\"x\"}"
+fg_raw 2 '{"tool_name":"mcp__figma__whoami"}'
+fg_raw 2 '{"tool_name":"mcp__figma__whoami","tool_input":"str"}'
+fg_raw 2 '{"tool_name":"mcp__figma__whoami","tool_input":[]}'
+fg_raw 2 '{"tool_name":"mcp__figma__whoami","tool_input":null}'
+# ReadMcpResourceTool: other servers pass with no decision; server figma limited to skill documents
+fg 0 ReadMcpResourceTool '{"server":"github","uri":"repo://anything","extra":1}'
+fg 0 ReadMcpResourceTool '{"server":"Figma","uri":"repo://anything"}'
+RMI='"tool_name":"ReadMcpResourceTool","tool_input":{"server":"github","uri":"repo://x"}'
+fg_raw 0 "{$RMI,\"agent_id\":\"\",\"agent_type\":null}"
+fg_raw 2 "{$RMI,\"agent_id\":\"a1b2\"}"
+fg_raw 0 "{$RMI,\"agent_type\":\"general-purpose\"}"
+fg_raw 2 "{$RMI,\"agent_id\":\"a1b2\",\"agent_type\":\"general-purpose\"}"
+fg_raw 0 "{\"tool_name\":\"ReadMcpResourceTool\",\"tool_input\":{\"server\":\"figma\",\"uri\":\"skill://figma/figma-use/SKILL.md\"},\"agent_id\":\"a1b2\"}"
+fg 2 ReadMcpResourceTool '{"uri":"skill://figma/figma-use/SKILL.md"}'
+fg 2 ReadMcpResourceTool '{"server":5,"uri":"skill://figma/figma-use/SKILL.md"}'
+fg 2 ReadMcpResourceTool '{"server":null,"uri":"x"}'
+fg 0 ReadMcpResourceTool '{"server":"figma","uri":"skill://figma/figma-use/SKILL.md"}'
+fg 0 ReadMcpResourceTool '{"server":"figma","uri":"skill://figma/figma-use/references/api.md"}'
+fg 2 ReadMcpResourceTool '{"server":"figma","uri":"skill://figma/figma-use/SKILL.md","x":1}'
+fg 2 ReadMcpResourceTool '{"server":"figma","uri":"skill://figma/figma-use/../x.md"}'
+fg 2 ReadMcpResourceTool '{"server":"figma","uri":"file:///etc/x.md"}'
+fg 2 ReadMcpResourceTool '{"server":"figma","uri":"skill://figma/figma-use/SKILL.txt"}'
+fg 2 ReadMcpResourceTool '{"server":"figma","uri":7}'
+fg 2 ReadMcpResourceTool '{"server":"figma"}'
+fg_raw 2 '{"tool_name":"ReadMcpResourceTool"}'
+fg_raw 2 '{"tool_name":"ReadMcpResourceTool","tool_input":"str"}'
+# fail closed on bad input and missing jq
+fg_raw 2 ''
+fg_raw 2 'garbage'
+fg_raw 2 '{bad json'
+fg_raw 2 '{}'
+fg_raw 2 '{"tool_input":{}}'
+fg_raw 2 '{"tool_name":123}'
+fg_raw 0 '{"tool_name":"mcp__figma__whoami","tool_input":{}}'
+NOJQ6=$(mktemp -d)
+printf '%s' '{"tool_name":"mcp__figma__whoami","tool_input":{}}' | PATH="$NOJQ6" "$BASH_BIN" "$FGHOOK" >/dev/null 2>&1; got=$?
+if [ "$got" = 2 ]; then echo "ok    [guard-mcp-figma.sh] jq missing"; else echo "FAIL  [guard-mcp-figma.sh] jq missing: want=2 got=$got"; fail=1; fi
+rmdir "$NOJQ6"
+
 # ---- guard-bash.sh: claude mcp config mutation and MCP config file writes ----
 check guard-bash.sh 2 'claude mcp add foo -- npx foo'
 check guard-bash.sh 2 "claude mcp add-json foo '{}'"

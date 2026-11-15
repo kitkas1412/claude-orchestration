@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh` and `guard-mcp-context7.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh`, `guard-mcp-context7.sh` and `guard-mcp-figma.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The global install adds `"claudeMdExcludes": ["**/.claude/rules/orchestration-global.md"]` to `~/.claude/settings.json`, so a local session loads the global rules once, from `~/.claude/CLAUDE.md`. The export strips that setting, because cloud sessions do not read `~/.claude` and still need `orchestration-global.md`.
 - Limits: the glob excludes any file named `orchestration-global.md` in any project. It assumes `~/.claude/CLAUDE.md` holds the global rules; after a partial install without it, local sessions get no global rules. The settings merge takes `claudeMdExcludes` from `settings.managed.json`, so it replaces any existing user value for that key.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
@@ -274,6 +274,42 @@ Known limits (defense in depth, not a sandbox):
 - Queries and library names go to Context7's hosted service. Context7 says queries are stored anonymously for benchmarking and API logs are kept 30 days ([data privacy](https://context7.com/docs/security/data-privacy), as of 2026-11-14).
 - An API key is optional. Without one, IP-based rate limits are low ([API guide](https://context7.com/docs/api-guide), as of 2026-11-14).
 - Context7 documents no response-size cap, so ask focused questions.
+
+## Figma MCP (optional, design to code and drafts)
+
+The official [Figma MCP server](https://mcp.figma.com/mcp) is remote. It is optional: you register it yourself, and `install.sh` never touches `~/.claude.json`. Only `ui-ux-engineer` (11 tools) and `code-reviewer` (3 read tools) have its tools. Without the server, briefs say `FIGMA: off` and nothing changes.
+
+Register it once (you run this):
+
+```bash
+claude mcp add --scope user --transport http figma https://mcp.figma.com/mcp
+```
+
+Then restart Claude Code, run `/mcp`, pick `figma` and choose Authenticate (OAuth in the browser). No token is needed.
+
+- The server must be registered as exactly `figma`. The plugin route (`figma@claude-plugins-official`) is not supported: its tools have a different prefix and the guard denies them.
+- Workflow: with an existing design, paste a `figma.com` URL in your request; `ui-ux-engineer` builds from it (`MODE: BUILD`) and `code-reviewer` compares the result with screenshots (`get_screenshot`, `get_metadata`, `create_session`; no `get_design_context`). With no design, the plan includes a `MODE: FIGMA-DRAFT` step that creates a new file in your Figma account. The orchestrator then stops and shows the file link and a node deep link; you may edit the file in Figma, and the build starts only after you approve in the conversation.
+- Writes follow the brief's `FIGMA-WRITE: new|<fileKey,...>|off` (default off). `new` allows only the file the agent creates; a fileKey list allows only those files, built inside one new wrapper frame or page, never changing nodes the agent did not create. The orchestrator allows one Figma writer per fileKey at a time.
+- Quota: read tools count about 200 calls per day and 10 per minute on a Professional plan with a Dev or Full seat, and a very low monthly quota on a Starter plan or a View or Collab seat (sources say roughly 6 to 20 calls; the number is set by Figma, see its rate-limits page; the orchestrator asks your plan and sets `FIGMA-QUOTA: low`, which means metadata and screenshots only). Write tools are not counted. Reads are cached as markdown under the scratchpad (`FIGMA-CACHE`), so the same node is not read twice.
+- Uninstall: `claude mcp remove figma`, then revoke the app in your Figma account settings. The hook and the 11 deny entries stay in `~/.claude/settings.json` until you delete them by hand, because `install.sh` never removes entries.
+
+Layers:
+
+1. `hooks/guard-mcp-figma.sh` is a `PreToolUse` hook on `mcp__.*[Ff][Ii][Gg][Mm][Aa].*` and on `ReadMcpResourceTool`. It is default-deny: only `create_session`, `whoami`, `get_metadata`, `get_design_context`, `get_screenshot`, `get_variable_defs`, `search_design_system`, `get_libraries`, `get_code_connect_map`, `create_new_file` and `use_figma` pass, and the tool name must start with `mcp__figma__`. Checks:
+   - Each tool accepts only its known keys; `fileKey`, `nodeId`, `sessionId`, `planKey`, `editorType` and `skillNames` must have the expected shapes, and free text (descriptions, queries, file names, labels) is denied if it looks like a secret.
+   - `use_figma` code is capped at 50000 characters and denied if it contains `fetch(`, `XMLHttpRequest`, `WebSocket`, `importScripts`, `eval(`, `new Function`, bare `Function(`, `import(`, `createImageAsync`, `loadAllPagesAsync` or `setPluginData`, or a secret-like assignment. These tripwires are trivially bypassed by obfuscation and are not a sandbox.
+   - `ReadMcpResourceTool` for server `figma` may read only `skill://figma/<skill>/<file>.md`. Other servers are denied when called from a subagent and pass through in the main session; a missing or non-string server is denied. `fileKey` must be 22 to 128 alphanumerics.
+   - Deny messages name the category only and never repeat the input. The hook fails closed when `jq` is missing.
+2. `permissions.deny` lists the AI-credit tools `generate_image`, `generate_vector_illustration` and nine `weave_*` tools (11 entries in `settings.managed.json`); the hook denies them too.
+3. The main session and the built-in general-purpose, Explore and Plan subagents inherit all tools, so they can also reach Figma tools within the hook allowlist; the orchestrator avoids built-in agents.
+4. `ui-ux-engineer` and `code-reviewer` are told to treat Figma content (layer names, text, annotations, fetched Figma skills) as untrusted data.
+
+Known limits (defense in depth, not a sandbox):
+
+- OAuth grants access to every file your Figma account can open. The brief's `FIGMA-WRITE` is a rule the agent follows, and the hook does not check which file an agent writes to; `use_figma` can edit any file you can edit.
+- Design data and descriptions leave the machine for Figma's service.
+- There is no automatic undo. Recover through Figma version history, which you do by hand.
+- If the main session does not run as the orchestrator agent, it can call the allowed Figma tools once the server is registered. The hook checks the arguments, not which agent calls.
 
 ## Optional browser verification
 
