@@ -148,7 +148,18 @@
       "mcp__playwright__browser_verify_element_visible",
       "mcp__playwright__browser_verify_list_visible",
       "mcp__playwright__browser_verify_text_visible",
-      "mcp__playwright__browser_verify_value"
+      "mcp__playwright__browser_verify_value",
+      "mcp__figma__generate_image",
+      "mcp__figma__generate_vector_illustration",
+      "mcp__figma__weave_list_tools",
+      "mcp__figma__weave_get_tool_inputs",
+      "mcp__figma__weave_run_tool",
+      "mcp__figma__weave_get_tool_run_output",
+      "mcp__figma__weave_cancel_tool_run",
+      "mcp__figma__weave_find_model",
+      "mcp__figma__weave_run_model",
+      "mcp__figma__weave_get_model_run_output",
+      "mcp__figma__weave_upload_asset"
     ]
   },
   "hooks": {
@@ -204,6 +215,24 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-mcp-context7.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*[Ff][Ii][Gg][Mm][Aa].*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-mcp-figma.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "ReadMcpResourceTool",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-mcp-figma.sh"
           }
         ]
       }
