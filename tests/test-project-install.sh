@@ -76,13 +76,21 @@ assert "exists: hooks/guard-mcp-serena.sh" test -f "$C/hooks/guard-mcp-serena.sh
 assert "executable: guard-mcp-serena.sh" test -x "$C/hooks/guard-mcp-serena.sh"
 assert "PreToolUse entry matches serena tools and runs the hook via CLAUDE_PROJECT_DIR" \
   jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*") | .hooks[].command | select(contains("hooks/guard-mcp-serena.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
-eq "PreToolUse has 6 entries" 6 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
+eq "PreToolUse has 8 entries" 8 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
 assert "exists: hooks/guard-mcp-context7.sh" test -f "$C/hooks/guard-mcp-context7.sh"
 assert "executable: guard-mcp-context7.sh" test -x "$C/hooks/guard-mcp-context7.sh"
 assert "PreToolUse entry matches context7 tools and runs the hook via CLAUDE_PROJECT_DIR" \
   jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*[Cc][Oo][Nn][Tt][Ee][Xx][Tt]7.*") | .hooks[].command | select(contains("hooks/guard-mcp-context7.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
 eq "exported guard-mcp-context7 denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-context7.sh '{"tool_name":"mcp__context7__future-tool","tool_input":{}}')"
 eq "exported guard-mcp-context7 allows a normal query-docs call" 0 "$(run_guard "$A" guard-mcp-context7.sh '{"tool_name":"mcp__context7__query-docs","tool_input":{"libraryId":"/facebook/react","query":"useEffect cleanup"}}')"
+assert "exists: hooks/guard-mcp-figma.sh" test -f "$C/hooks/guard-mcp-figma.sh"
+assert "executable: guard-mcp-figma.sh" test -x "$C/hooks/guard-mcp-figma.sh"
+assert "PreToolUse entry matches figma tools and runs the hook via CLAUDE_PROJECT_DIR" \
+  jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*[Ff][Ii][Gg][Mm][Aa].*") | .hooks[].command | select(contains("hooks/guard-mcp-figma.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
+assert "PreToolUse entry matches ReadMcpResourceTool and runs the figma hook via CLAUDE_PROJECT_DIR" \
+  jq -e '[.hooks.PreToolUse[] | select(.matcher == "ReadMcpResourceTool") | .hooks[].command | select(contains("hooks/guard-mcp-figma.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
+eq "exported guard-mcp-figma denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-figma.sh '{"tool_name":"mcp__figma__get_comments","tool_input":{}}')"
+eq "exported guard-mcp-figma allows whoami" 0 "$(run_guard "$A" guard-mcp-figma.sh '{"tool_name":"mcp__figma__whoami","tool_input":{}}')"
 eq "exported guard-mcp-serena denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__execute_shell_command","tool_input":{}}')"
 eq "exported guard-mcp-serena allows an existing project path" 0 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__find_symbol","tool_input":{"relative_path":"CLAUDE.md"}}')"
 eq "exported guard-mcp-serena denies a non-existent path" 2 "$(run_guard "$A" guard-mcp-serena.sh '{"tool_name":"mcp__serena__find_symbol","tool_input":{"relative_path":"src/app.py"}}')"

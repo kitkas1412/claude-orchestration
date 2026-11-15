@@ -49,6 +49,17 @@ PLAYWRIGHT_MATCHER = 'mcp__.*([Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]|__browser
 CONTEXT7_TOOLS = {'mcp__context7__resolve-library-id', 'mcp__context7__query-docs'}
 CONTEXT7_AGENTS = {'researcher'}
 CONTEXT7_MATCHER = 'mcp__.*[Cc][Oo][Nn][Tt][Ee][Xx][Tt]7.*'
+FIGMA_TOOLS = {'mcp__figma__' + n for n in (
+    'create_session', 'whoami', 'get_metadata', 'get_design_context', 'get_screenshot', 'get_variable_defs',
+    'search_design_system', 'get_libraries', 'get_code_connect_map', 'create_new_file', 'use_figma',
+)}
+FIGMA_REVIEW_TOOLS = {'mcp__figma__' + n for n in ('create_session', 'get_screenshot', 'get_metadata')}
+FIGMA_UI_AGENT_TOOLS = FIGMA_TOOLS | {'ReadMcpResourceTool'}
+FIGMA_AGENTS = {'ui-ux-engineer': FIGMA_UI_AGENT_TOOLS, 'code-reviewer': FIGMA_REVIEW_TOOLS}
+FIGMA_DENIED = ('mcp__figma__generate_image', 'mcp__figma__generate_vector_illustration')
+FIGMA_DENIED_PREFIX = 'mcp__figma__weave_'
+FIGMA_MATCHER = 'mcp__.*[Ff][Ii][Gg][Mm][Aa].*'
+RESOURCE_MATCHER = 'ReadMcpResourceTool'
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -99,10 +110,19 @@ for f in agents:
     c7 = {t for t in listed if t.startswith('mcp__context7')}
     if c7 != (CONTEXT7_TOOLS if f[:-3] in CONTEXT7_AGENTS else set()):
         errors.append('%s: Context7 tools must be exactly %s' % (f, 'the two Context7 tools' if f[:-3] in CONTEXT7_AGENTS else 'none (researcher only)'))
+    fg = {t for t in listed if t.startswith('mcp__figma') or t == 'ReadMcpResourceTool'}
+    want_fg = FIGMA_AGENTS.get(f[:-3], set())
+    for t in sorted(want_fg - fg):
+        errors.append('%s: missing Figma tool %s' % (f, t))
+    for t in sorted(fg - want_fg):
+        errors.append('%s: Figma tool %s not allowed (only %s)' % (f, t, ', '.join(sorted(FIGMA_AGENTS))))
+    for t in listed:
+        if t in FIGMA_DENIED or t.startswith(FIGMA_DENIED_PREFIX):
+            errors.append('%s: denied Figma tool %s' % (f, t))
     if 'mcpServers' in d:
         errors.append('%s: mcpServers frontmatter is not allowed' % f)
     for t in listed:
-        if t in PLAYWRIGHT_ALLOWED or t in CONTEXT7_TOOLS:
+        if t in PLAYWRIGHT_ALLOWED or t in CONTEXT7_TOOLS or t in FIGMA_TOOLS or t == 'ReadMcpResourceTool':
             pass
         elif t in SERENA_TOOLS:
             if f[:-3] not in SERENA_AGENTS:
@@ -169,6 +189,9 @@ if os.path.isfile(sp):
         errors.append('settings.managed.json: guard-mcp-playwright.sh not registered with matcher ' + PLAYWRIGHT_MATCHER)
     if not any(g.get('matcher') == CONTEXT7_MATCHER and any(h.get('command', '').endswith('/guard-mcp-context7.sh') for h in g.get('hooks', [])) for g in pre):
         errors.append('settings.managed.json: guard-mcp-context7.sh not registered with matcher ' + CONTEXT7_MATCHER)
+    for mt in (FIGMA_MATCHER, RESOURCE_MATCHER):
+        if not any(g.get('matcher') == mt and any(h.get('command', '').endswith('/guard-mcp-figma.sh') for h in g.get('hooks', [])) for g in pre):
+            errors.append('settings.managed.json: guard-mcp-figma.sh not registered with matcher ' + mt)
     if not pre or not any(h.get('command', '').endswith('/filter-test-output.sh') for h in pre[-1].get('hooks', [])):
         errors.append('settings.managed.json: filter-test-output.sh must be the last PreToolUse entry')
 hp = ROOT + '/hooks/guard-mcp-serena.sh'
@@ -192,6 +215,13 @@ else:
     m = re.search(r'^case "\$\{TOOL#mcp__context7__\}" in\n\s*([a-z_|-]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
     if not m or {'mcp__context7__' + n for n in m.group(1).split('|')} != CONTEXT7_TOOLS:
         errors.append('hooks/guard-mcp-context7.sh: allowlist differs from CONTEXT7_TOOLS')
+hp = ROOT + '/hooks/guard-mcp-figma.sh'
+if not os.path.isfile(hp):
+    errors.append('hooks/guard-mcp-figma.sh missing')
+else:
+    m = re.search(r'^case "\$\{TOOL#mcp__figma__\}" in\n\s*([a-z_|-]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
+    if not m or {'mcp__figma__' + n for n in m.group(1).split('|')} != FIGMA_TOOLS:
+        errors.append('hooks/guard-mcp-figma.sh: allowlist differs from FIGMA_TOOLS')
 
 skills = sorted(os.listdir(ROOT + '/skills'))
 for s in skills:
