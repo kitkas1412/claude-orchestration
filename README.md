@@ -1,6 +1,6 @@
 # Claude Code Orchestration
 
-Portable user-level setup for Claude Code: an orchestrator, 19 specialist subagents, skills, safety hooks and settings. This repository is the source of truth, and `install.sh` copies it into `~/.claude`.
+Portable user-level setup for Claude Code: an orchestrator, 20 specialist subagents, skills, safety hooks and settings. This repository is the source of truth, and `install.sh` copies it into `~/.claude`.
 
 See [ORCHESTRATION.md](ORCHESTRATION.md) for routing, the roster and the skills registry.
 
@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh`, `guard-mcp-context7.sh` and `guard-mcp-figma.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh`, `guard-mcp-context7.sh`, `guard-mcp-figma.sh`, `guard-aws.sh` and `aws-agent-bash.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The global install adds `"claudeMdExcludes": ["**/.claude/rules/orchestration-global.md"]` to `~/.claude/settings.json`, so a local session loads the global rules once, from `~/.claude/CLAUDE.md`. The export strips that setting, because cloud sessions do not read `~/.claude` and still need `orchestration-global.md`.
 - Limits: the glob excludes any file named `orchestration-global.md` in any project. It assumes `~/.claude/CLAUDE.md` holds the global rules; after a partial install without it, local sessions get no global rules. The settings merge takes `claudeMdExcludes` from `settings.managed.json`, so it replaces any existing user value for that key.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
@@ -311,6 +311,50 @@ Known limits (defense in depth, not a sandbox):
 - There is no automatic undo. Recover through Figma version history, which you do by hand.
 - If the main session does not run as the orchestrator agent, it can call the allowed Figma tools once the server is registered. The hook checks the arguments, not which agent calls.
 
+## AWS (optional, inspect and prepare only)
+
+`aws-engineer` inspects EC2 and S3 state and prepares AWS CLI commands and IaC drafts, which it returns inline (it has no Edit or Write tool). It never mutates AWS, never logs in, never reads secrets and never downloads S3 object contents (listing only). There is no AWS MCP server; it uses the `aws` CLI. Without the profile below, it reports BLOCKED.
+
+Setup (you do this; the agent never reads `~/.aws`). Add to `~/.aws/config`:
+
+```ini
+[profile claude-agent]
+sso_session = <name>
+sso_account_id = <ACCOUNT_ID>
+sso_role_name = PowerUserAccess
+region = <region>
+output = json
+
+[sso-session <name>]
+sso_start_url = https://<org>.awsapps.com/start
+sso_region = <region>
+sso_registration_scopes = sso:account:access
+```
+
+```bash
+aws sso login --profile claude-agent    # before the session
+aws sso logout                          # after the session
+```
+
+- Modes: `INSPECT` (read-only queries, no plan approval) and `PREPARE` (drafts; EC2 drafts are validated with `--dry-run`, where `DryRunOperation` means permitted and `UnauthorizedOperation` means denied). Briefs carry `MODE`, `AWS-REGION` and `AWS-ACCOUNT`.
+- Handoff: every mutating command comes back under COMMANDS FOR USER as `! aws ... --profile claude-agent`, with its effect and a rollback. You run it yourself.
+- On an expired token the agent stops and asks you to run `! aws sso login --profile claude-agent`.
+
+Layers:
+
+1. `hooks/guard-aws.sh` applies to every agent and the main session. Each allowed call needs `--profile claude-agent` exactly once. Allowed: `sts get-caller-identity`, `ec2 describe-*` (secret-bearing ones excluded), EC2 mutating verbs only with `--dry-run`, `s3 ls`, `s3api list-*`, `head-bucket`, `get-bucket-*` (location, versioning, encryption, policy, policy-status, acl, tagging, lifecycle-configuration, cors, logging, ownership-controls, website, notification-configuration, replication), `get-public-access-block`, `--version`, and `help` only as `aws help`, `aws <svc> help` or `aws <svc> <op> help` for `sts`, `ec2`, `s3` and `s3api` (allowlisted operations; not `s3 <op> help`). Denied: `configure`, `sso`, login and logout, other `sts`, secret reads (`ssm get-parameter*`, `secretsmanager get-secret-value`, `lambda get-function*`, `ec2 get-*`, ...), `s3 cp|sync|mv|presign|rm|rb`, `s3api get-object`, `--debug`, `--endpoint-url`, `--cli-input-json|yaml`, `file://`, abbreviated flags, SDK inline scripts, aws behind wrappers and runners (`env`, `xargs`, `uv run`, `npx`, `docker run`, ...) and IaC deploy verbs. `AWS_*` is denied as an assignment or env prefix (`AWS_X=`), through `export`, `declare`, `typeset`, `local`, `readonly`, `read`, `mapfile` or `printf -v`, and anywhere on a line that also runs aws, a wrapper or runner, a shell, `eval` or `source`; plain mentions (`grep -rn AWS_REGION src`) pass. Deny messages start with `BLOCKED by guard-aws:`.
+2. `hooks/aws-agent-bash.sh` is a `PreToolUse` hook on the `aws-engineer` Bash tool with a fail-closed token grammar. It allows only `aws jq grep head tail wc cut tr sort uniq echo date`, each with an option allowlist; outside single quotes only `[A-Za-z0-9_./:=,@%+-]`, spaces and the operators `|`, `&&` and `;`, so `$`, double quotes, globs, braces, `~`, `#`, redirection and backslashes are blocked; and no absolute, `~`, `..` or credential paths. It also runs `guard-aws.sh` on aws commands. Command shape for the agent: literal IDs, single quotes for `--query` and jq filters.
+3. `hooks/readonly-bash.sh` (read-only agents) now fails closed on expansion: outside single quotes it denies `$` in any form, backticks, `( ) { }` and `\`, and double quotes may not contain `$`, backticks or `\`. It also denies `rg --pre`, `--pre-glob`, `--hostname-bin`, `-z`, `sort` long options outside a safe set, `jq --rawfile`/`--slurpfile`, `env`/`$ENV`, sed scripts other than plain `p`, `d`, `q`, `=` and `s///` (no `e`, `w`, `W`, `r`), git pager, output, external-diff, textconv and filter options (abbreviations included) and `git grep -O`, the `.aws` directory, and globs in hidden path components.
+
+Known limits (defense in depth, not a sandbox):
+
+- `PowerUserAccess` can change most AWS services and there is no IAM read-only layer. The hooks parse command text; the real boundary would be a read-only permission set.
+- `guard-aws.sh` also applies these global denies to every agent and the main session: a pipe into `sh`, `bash` or another shell; a shell, `eval` or `source` with an expansion or substitution argument (a plain `"$VAR/path"` script argument without `-c` is allowed when the line has no aws or `AWS_*`); a command word built from an expansion, substitution, escape, glob or brace (except `"$ENV_VAR/path"` and `"$(git rev-parse --show-toplevel)/path"` on lines without aws or `AWS_*`); and aws together with `$(`, `${`, `$'`, backticks, an unquoted brace, `eval` or an array assignment. Quoted heredoc bodies read by `cat`, `tee`, `git` or `git-publish.sh` count as data, so commit messages may mention aws, `AWS_*` or `cdk deploy`.
+- Known limit: `AWS_DEFAULT_REGION=us-east-1 pytest` and similar `AWS_*` prefixes for test runs are denied; run such commands yourself.
+- `aws-engineer` has no Edit or Write tool: it returns drafts inline, and repo files go to `devops-engineer`. `guard-write.sh` also denies agent writes to shell startup files (`.zshenv`, `.zshrc`, `.bashrc`, `.profile`, ...), `~/.jq`, `~/.config/fish/` and `~/Library/LaunchAgents/`.
+- Scripts run by other agents (SDK or other tools) can use the cached SSO session. Run `aws sso logout` after use.
+- Install the hooks with `bash install.sh`; it never removes hook entries, so delete them from `~/.claude/settings.json` by hand to remove them.
+
 ## Optional browser verification
 
 The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. When the Playwright MCP server above is registered, the skill uses it first for navigation, snapshots, screenshots, console and interaction. `playwright-cli` remains for the checks that need page JavaScript evaluation (reduced motion, WebGL renderer, frame rate) and as the fallback when the MCP tools are absent. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it, and without the MCP server, the agent reports that the UI was not rendered.
@@ -408,7 +452,7 @@ apps/web/.env.local
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` | Global rules |
 | `ORCHESTRATION.md` | `~/.claude/ORCHESTRATION.md` | Operating manual |
 | `agents/` | `~/.claude/agents/` | Orchestrator and subagents |
-| `hooks/` | `~/.claude/hooks/` | Safety hooks |
+| `hooks/` | `~/.claude/hooks/` | Safety hooks (including `guard-aws.sh` and `aws-agent-bash.sh`) |
 | `skills/` | `~/.claude/skills/` | Custom skills |
 | `third_party/skills/` | `~/.claude/skills/` | Reviewed copies of external skills |
 | `third_party/licenses/` | Not installed | Licenses for those skills |

@@ -151,6 +151,15 @@ for f in agents:
                 name = os.path.basename(h['command'])
                 if not os.path.isfile('%s/hooks/%s' % (ROOT, name)):
                     errors.append('%s: missing hook %s' % (f, name))
+    registers_aws = any(h.get('command', '').endswith('/aws-agent-bash.sh') for ev in (d.get('hooks') or {}).values() for group in ev for h in group.get('hooks', []))
+    if f == 'aws-engineer.md':
+        if not any(group.get('matcher') == 'Bash' and any(h.get('command', '').endswith('/aws-agent-bash.sh') for h in group.get('hooks', [])) for group in (d.get('hooks') or {}).get('PreToolUse', [])):
+            errors.append('%s: frontmatter hooks must register aws-agent-bash.sh as a PreToolUse hook with matcher Bash' % f)
+        aws_tools = [t.strip() for t in str(d.get('tools') or '').split(',') if t.strip()]
+        if not aws_tools or any(t in ('Edit', 'Write', 'NotebookEdit', 'MultiEdit') for t in aws_tools):
+            errors.append('%s: tools must be an explicit list without Edit, Write, NotebookEdit or MultiEdit' % f)
+    elif registers_aws:
+        errors.append('%s: aws-agent-bash.sh is only for aws-engineer' % f)
     if f != 'orchestrator.md' and 'Final report' not in body:
         errors.append('%s: no output contract' % f)
 
@@ -192,8 +201,29 @@ if os.path.isfile(sp):
     for mt in (FIGMA_MATCHER, RESOURCE_MATCHER):
         if not any(g.get('matcher') == mt and any(h.get('command', '').endswith('/guard-mcp-figma.sh') for h in g.get('hooks', [])) for g in pre):
             errors.append('settings.managed.json: guard-mcp-figma.sh not registered with matcher ' + mt)
+    aws_idx = [i for i, g in enumerate(pre) if g.get('matcher') == 'Bash' and any(h.get('command', '').endswith('/guard-aws.sh') for h in g.get('hooks', []))]
+    if not aws_idx:
+        errors.append('settings.managed.json: guard-aws.sh not registered with matcher Bash')
+    elif aws_idx[0] >= len(pre) - 1:
+        errors.append('settings.managed.json: guard-aws.sh must come before filter-test-output.sh (which stays last)')
     if not pre or not any(h.get('command', '').endswith('/filter-test-output.sh') for h in pre[-1].get('hooks', [])):
         errors.append('settings.managed.json: filter-test-output.sh must be the last PreToolUse entry')
+hp = ROOT + '/hooks/guard-aws.sh'
+if not os.path.isfile(hp):
+    errors.append('hooks/guard-aws.sh missing')
+else:
+    m = re.search(r"^AWS_AGENT_PROFILE='([^']*)'", open(hp, encoding='utf-8').read(), re.M)
+    if not m:
+        errors.append("hooks/guard-aws.sh: no line AWS_AGENT_PROFILE='<profile>'")
+    else:
+        for rel in ('agents/aws-engineer.md', 'skills/aws-safe-ops/SKILL.md'):
+            ap = '%s/%s' % (ROOT, rel)
+            if not os.path.isfile(ap):
+                errors.append('%s missing' % rel)
+            elif '`%s`' % m.group(1) not in open(ap, encoding='utf-8').read():
+                errors.append('%s: profile differs from AWS_AGENT_PROFILE in hooks/guard-aws.sh (expected `%s`)' % (rel, m.group(1)))
+if not os.path.isfile(ROOT + '/hooks/aws-agent-bash.sh'):
+    errors.append('hooks/aws-agent-bash.sh missing')
 hp = ROOT + '/hooks/guard-mcp-serena.sh'
 if not os.path.isfile(hp):
     errors.append('hooks/guard-mcp-serena.sh missing')
