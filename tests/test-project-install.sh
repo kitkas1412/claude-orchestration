@@ -76,7 +76,7 @@ assert "exists: hooks/guard-mcp-serena.sh" test -f "$C/hooks/guard-mcp-serena.sh
 assert "executable: guard-mcp-serena.sh" test -x "$C/hooks/guard-mcp-serena.sh"
 assert "PreToolUse entry matches serena tools and runs the hook via CLAUDE_PROJECT_DIR" \
   jq -e '[.hooks.PreToolUse[] | select(.matcher == "mcp__.*[Ss][Ee][Rr][Ee][Nn][Aa].*") | .hooks[].command | select(contains("hooks/guard-mcp-serena.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
-eq "PreToolUse has 8 entries" 8 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
+eq "PreToolUse has 9 entries" 9 "$(jq '.hooks.PreToolUse | length' "$C/settings.json")"
 assert "exists: hooks/guard-mcp-context7.sh" test -f "$C/hooks/guard-mcp-context7.sh"
 assert "executable: guard-mcp-context7.sh" test -x "$C/hooks/guard-mcp-context7.sh"
 assert "PreToolUse entry matches context7 tools and runs the hook via CLAUDE_PROJECT_DIR" \
@@ -101,6 +101,14 @@ assert "PreToolUse entry matches playwright tools and runs the hook via CLAUDE_P
 eq "exported guard-mcp-playwright denies a non-allowlisted tool" 2 "$(run_guard "$A" guard-mcp-playwright.sh '{"tool_name":"mcp__playwright__browser_evaluate","tool_input":{}}')"
 eq "exported guard-mcp-playwright allows navigate to localhost" 0 "$(run_guard "$A" guard-mcp-playwright.sh '{"tool_name":"mcp__playwright__browser_navigate","tool_input":{"url":"http://localhost:3000/"}}')"
 eq "exported guard-mcp-playwright denies navigate to an external URL" 2 "$(run_guard "$A" guard-mcp-playwright.sh '{"tool_name":"mcp__playwright__browser_navigate","tool_input":{"url":"https://example.com/"}}')"
+for h in guard-aws aws-agent-bash; do
+  assert "exists: hooks/$h.sh" test -f "$C/hooks/$h.sh"
+  assert "executable: $h.sh" test -x "$C/hooks/$h.sh"
+done
+assert "Bash PreToolUse entry references guard-aws.sh via CLAUDE_PROJECT_DIR" \
+  jq -e '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(contains("hooks/guard-aws.sh") and contains("$CLAUDE_PROJECT_DIR"))] | length == 1' "$C/settings.json"
+eq "exported guard-aws denies a mutating aws call" 2 "$(run_guard "$A" guard-aws.sh '{"tool_input":{"command":"aws ec2 terminate-instances --instance-ids i-1 --profile claude-agent"}}')"
+eq "exported guard-aws allows get-caller-identity" 0 "$(run_guard "$A" guard-aws.sh '{"tool_input":{"command":"aws sts get-caller-identity --profile claude-agent"}}')"
 eq "no git-publish.sh under .claude" "" "$(find "$C" -name 'git-publish.sh' | head -1)"
 assert_not "no apple-design" test -e "$C/skills/apple-design"
 eq "no backup dir created in HOME by test (no .claude/backup)" "" "$(find "$C" -iname '*backup*' | head -1)"

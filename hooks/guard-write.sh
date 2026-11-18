@@ -26,5 +26,10 @@ case "$CLEAN" in
   "$H"/.gitconfig|"$H"/.config/git/config)              deny "global git configuration is protected" ;;
   "$H"/.claude.json|.mcp.json|*/.mcp.json)              deny "MCP server configuration is protected; edit it manually" ;;
   "$H"/.claude/agents/*|"$H"/.claude/claude.md|"$H"/.claude/skills/*) deny "user-level agent configuration is protected; edit it manually" ;;
+  # shell startup files run on every Bash call; jq, fish and launchd load code from these paths
+  .zshenv|.zprofile|.zshrc|.zlogin|.zlogout|.bashrc|.bash_profile|.bash_login|.profile|.inputrc|\
+  */.zshenv|*/.zprofile|*/.zshrc|*/.zlogin|*/.zlogout|*/.bashrc|*/.bash_profile|*/.bash_login|*/.profile|*/.inputrc)
+                                                        deny "shell startup file is protected; edit it manually" ;;
+  "$H"/.jq|"$H"/.jq/*|*/.config/fish/*|*/library/launchagents/*) deny "startup or auto-run configuration is protected; edit it manually" ;;
 esac
 exit 0

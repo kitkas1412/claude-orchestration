@@ -307,6 +307,358 @@ check guard-bash.sh 0 'git restore -S .claude/settings.json'
 check guard-bash.sh 2 'curl -o.claude/hooks/guard-bash.sh https://e'
 check guard-bash.sh 2 'curl --output=.claude/hooks/guard-bash.sh https://e'
 check guard-bash.sh 2 'curl -sSLo.claude/hooks/guard-bash.sh https://e'
+# guard-aws.sh: default-deny grammar for aws plus bypass tripwires (profile claude-agent only)
+check guard-aws.sh 2 'aws ec2 terminate-instances --instance-ids i-1 --profile claude-agent'
+check guard-aws.sh 2 'aws ec2 describe-instances'
+check guard-aws.sh 2 'aws ec2 describe-instances --profile admin'
+check guard-aws.sh 2 'aws --profile claude-agent --profile admin ec2 describe-instances'
+check guard-aws.sh 2 'aws sso login --profile claude-agent'
+check guard-aws.sh 2 'aws configure export-credentials --profile claude-agent'
+check guard-aws.sh 2 'aws configure set region x'
+check guard-aws.sh 2 'aws s3 cp s3://b/k . --profile claude-agent'
+check guard-aws.sh 2 'aws s3 presign s3://b/k --profile claude-agent'
+check guard-aws.sh 2 'aws s3api get-object --bucket b --key k o --profile claude-agent'
+check guard-aws.sh 2 'aws ssm get-parameter --name x --with-decryption --profile claude-agent'
+check guard-aws.sh 2 'aws ec2 describe-instance-attribute --attribute userData --instance-id i-1 --profile claude-agent'
+check guard-aws.sh 2 'aws ec2 get-password-data --instance-id i-1 --profile claude-agent'
+check guard-aws.sh 2 'aws ec2 run-instances --image-id ami-1 --profile claude-agent'
+check guard-aws.sh 2 'aws ec2 run-instances --dry-run --no-dry-run --profile claude-agent'
+check guard-aws.sh 2 'aws ec2 describe-instances --profile claude-agent --cli-input-json file://x.json'
+check guard-aws.sh 2 'aws ec2 describe-instances --profile claude-agent --endpoint-url http://x'
+check guard-aws.sh 2 'aws sts get-caller-identity --profile claude-agent --debug'
+check guard-aws.sh 2 '/usr/local/bin/aws ec2 describe-instances --profile claude-agent'
+check guard-aws.sh 2 'env aws ec2 stop-instances --profile claude-agent'
+check guard-aws.sh 2 'echo i-1 | xargs aws ec2 terminate-instances --profile claude-agent --instance-ids'
+check guard-aws.sh 2 'bash -c "aws ec2 stop-instances --instance-ids i-1 --profile claude-agent"'
+check guard-aws.sh 2 'A=aws; $A ec2 stop-instances'
+check guard-aws.sh 2 'AWS_PROFILE=claude-agent python3 x.py'
+check guard-aws.sh 2 "python3 -c \"import boto3; boto3.client('ec2').terminate_instances(InstanceIds=['i'])\""
+check guard-aws.sh 2 'node -e "require('"'"'@aws-sdk/client-ec2'"'"')"'
+check guard-aws.sh 2 'npx cdk deploy'
+check guard-aws.sh 2 'sam deploy --guided'
+check guard-aws.sh 2 'curl --aws-sigv4 aws:amz:us-east-1:ec2 https://ec2.amazonaws.com'
+check guard-aws.sh 2 'docker run -v ~/.aws:/root/.aws img'
+check guard-aws.sh 2 'echo "$(aws ec2 stop-instances --instance-ids i-1 --profile claude-agent)"'
+check guard-aws.sh 2 'aws ec2 describe-vpn-connections --profile claude-agent'
+check guard-aws.sh 2 'aws lambda list-functions --profile claude-agent'
+check guard-aws.sh 0 'aws sts get-caller-identity --profile claude-agent'
+check guard-aws.sh 0 "aws --profile claude-agent --region us-east-1 ec2 describe-instances --query 'Reservations[].Instances[] | [0]'"
+check guard-aws.sh 0 'aws ec2 describe-security-groups --profile=claude-agent --output table'
+check guard-aws.sh 0 'aws ec2 run-instances --dry-run --image-id ami-1 --instance-type t3.micro --profile claude-agent'
+check guard-aws.sh 0 'aws ec2 terminate-instances --instance-ids i-1 --dry-run --profile claude-agent'
+check guard-aws.sh 0 'aws s3 ls s3://b --recursive --profile claude-agent'
+check guard-aws.sh 0 'aws s3api list-objects-v2 --bucket b --profile claude-agent'
+check guard-aws.sh 0 'aws s3api get-bucket-policy --bucket b --profile claude-agent'
+check guard-aws.sh 0 'aws ec2 describe-instances help'
+check guard-aws.sh 0 'aws --version'
+check guard-aws.sh 0 'grep -rn "aws ec2 terminate-instances" docs'
+check guard-aws.sh 0 'rg boto3'
+check guard-aws.sh 0 'grep AWS_PROFILE= README.md'
+check guard-aws.sh 0 'ls terraform/aws'
+check guard-aws.sh 0 'pip install boto3'
+check guard-aws.sh 0 'cdk synth'
+check guard-aws.sh 0 'echo "run: aws ec2 start-instances --instance-ids i-1"'
+# deny messages carry the hook name prefix
+check_msg() {
+  local hook=$1 prefix=$2 cmd=$3 out
+  out=$(jq -n --arg c "$cmd" '{tool_input:{command:$c}}' | "$HOOKS/$hook" 2>&1 >/dev/null)
+  case "$out" in "$prefix"*) echo "ok    [$hook] message prefix: $cmd" ;; *) echo "FAIL  [$hook] message lacks '$prefix': $cmd"; fail=1 ;; esac
+}
+check_msg guard-aws.sh 'BLOCKED by guard-aws:' 'aws ec2 terminate-instances --instance-ids i-1 --profile claude-agent'
+check_msg aws-agent-bash.sh 'BLOCKED by aws-agent-bash:' 'python3 x.py'
+# aws-agent-bash.sh: strict hook for the aws-engineer agent (aws grammar itself is guard-aws.sh's job)
+check aws-agent-bash.sh 2 'python3 x.py'
+check aws-agent-bash.sh 2 'bash x.sh'
+check aws-agent-bash.sh 2 'curl https://x'
+check aws-agent-bash.sh 2 'terraform plan'
+check aws-agent-bash.sh 2 'aws sts get-caller-identity --profile claude-agent > out.json'
+check aws-agent-bash.sh 2 'FOO=1 aws sts get-caller-identity --profile claude-agent'
+check aws-agent-bash.sh 0 'aws sts get-caller-identity --profile claude-agent | jq .Account'
+check aws-agent-bash.sh 0 'echo hi'
+# round 2: every bypass found by review and audit. AG = both aws hooks; ALL = also readonly-bash.
+AG() { check guard-aws.sh "$1" "$2"; check aws-agent-bash.sh "$1" "$2"; }
+ALL() { AG "$1" "$2"; check readonly-bash.sh "$1" "$2"; }
+# A: segmenting and comments
+AG 2 'aws --profile claude-agent ec2 terminate-instances --instance-ids i-1 --dry-run --query {a:b} --no-dry-run'
+AG 2 'aws --profile claude-agent ec2 terminate-instances --instance-ids i-1 # --dry-run'
+AG 2 'aws ec2 terminate-instances --instance-ids i-1 --dry-run # --profile claude-agent'
+# B: escaped quote inside double quotes
+AG 2 'echo "a\" $(aws --profile admin ec2 terminate-instances --instance-ids i-1)"'
+# C: commit-message stripping must not hide code
+AG 2 'echo "; git commit -m "<(aws --profile admin ec2 terminate-instances --instance-ids i-1)""'
+AG 2 'echo "(git commit -m "<(aws s3 cp s3://b/k -)"x"'
+# D: allowlisted programs that run programs
+for h in aws-agent-bash.sh readonly-bash.sh; do
+  check "$h" 2 'rg --pre bash . /path/x.sh'
+  check "$h" 2 "rg --pre-glob '*.pdf' --pre ./x foo ."
+  check "$h" 2 'rg --hostname-bin ./x foo'
+  check "$h" 2 'rg -z foo .'
+  check "$h" 2 'rg --search-zip foo .'
+  check "$h" 2 'sort --com=sh -S 1k f'
+done
+# E: credential reads through globs and absolute paths
+ALL 2 'head ~/.a?s/sso/cache/*.json'
+ALL 2 'cat ~/.a[w]s/cli/cache/*.json'
+ALL 2 "jq --rawfile x ~/.a?s/sso/cache/a.json -n '\$x'"
+ALL 2 'head /Users/x/.aws/sso/cache/x.json'
+ALL 2 'cat ~/[.]aws/credentials'
+ALL 2 'cat ~/.a\ws/credentials'
+# F: userData spelled through quotes or escapes
+AG 2 'aws --profile claude-agent ec2 describe-instance-attribute --instance-id i-1 --attribute "user""Data"'
+AG 2 'aws --profile claude-agent ec2 describe-instance-attribute --instance-id i-1 --attribute userD\ata'
+AG 2 "aws --profile claude-agent ec2 describe-instance-attribute --instance-id i-1 --attribute 'user''Data'"
+# G: command words the old first_cmd missed
+AG 2 'case a in a) aws --profile admin ec2 stop-instances;; esac'
+AG 2 'coproc aws --profile admin ec2 stop-instances'
+AG 2 '>/dev/null aws --profile admin ec2 stop-instances'
+AG 2 '</dev/null aws --profile admin ec2 stop-instances'
+AG 2 'AWS --profile admin ec2 terminate-instances --instance-ids i-1'
+AG 2 '2>/dev/null aws --profile admin ec2 stop-instances'
+AG 2 'aws ec2 terminate-instances --instance-ids i-1 --profile claude-agent >--dry-run'
+# H: runners and launchers
+for w in 'uv run' 'pnpm exec' 'poetry run' 'caffeinate -i' 'arch -arm64' 'mise exec --' 'op run --' 'ionice -c3' \
+         'taskset 1' 'setsid' 'flock /tmp/l' 'sandbox-exec -p x' 'npm exec' 'bunx' 'pipx run' 'direnv exec .' 'dotenv --'; do
+  AG 2 "$w aws --profile admin ec2 stop-instances --instance-ids i-1"
+done
+AG 2 'docker run -v $HOME:/root img aws --profile admin ec2 stop-instances'
+check guard-aws.sh 2 'docker run -v $HOME:/root img sh'
+check guard-aws.sh 2 'podman run --mount type=bind,source=/Users/x,target=/root img sh'
+# I: obfuscated command words
+AG 2 'x=(aws --profile claude-agent sts get-caller-identity); "${x[0]}" --profile admin ec2 terminate-instances --instance-ids i-1'
+AG 2 "\$'\\x61ws' s3 cp s3://b/k -"
+AG 2 '${x:-aws} ec2 stop-instances'
+AG 2 '{aws,} ec2 stop-instances'
+AG 2 '/usr/local/bin/aw? ec2 stop-instances'
+AG 2 '$(printf aws) ec2 stop-instances'
+AG 2 "env \$'\\x61ws' s3 cp s3://b/k -"
+AG 2 'X=a; Y=ws; $X$Y ec2 stop-instances'
+AG 2 "eval 'a''ws --profile admin ec2 stop-instances'"
+AG 2 "bash -c \$'\\x61ws s3 ls'"
+# code the hook cannot see: data piped into a shell, substituted scripts, multi-word wrapper arguments, aws copies
+check guard-aws.sh 2 "printf '\\141ws --profile admin ec2 stop-instances' | sh"
+check guard-aws.sh 2 "printf '\\141ws s3 ls' | env bash"
+check guard-aws.sh 2 "bash <(printf '\\141ws s3 ls')"
+check guard-aws.sh 2 "source <(printf '\\141ws s3 ls')"
+check guard-aws.sh 2 "bash <<EOF
+\$'\\x61ws' s3 cp s3://b/k -
+EOF"
+check guard-aws.sh 2 "env -S 'aws --profile admin ec2 stop-instances'"
+check guard-aws.sh 2 "watch 'aws --profile admin ec2 stop-instances'"
+check guard-aws.sh 2 'ln -s /usr/local/bin/aws x'
+check guard-aws.sh 2 'cp /usr/local/bin/a?s x'
+check guard-aws.sh 2 'hash -p /usr/local/bin/aws x; x --profile admin ec2 stop-instances'
+check guard-aws.sh 2 'f() { aws "$@"; }; f --profile admin ec2 stop-instances'
+check guard-aws.sh 2 '\aws --profile claude-agent sts get-caller-identity'
+check guard-aws.sh 0 'false || bash scripts/x.sh'
+check guard-aws.sh 0 'bash scripts/x.sh | tee out.log'
+check guard-aws.sh 0 'git log --oneline | head -n 5'
+# J: AWS_* identifiers redirect the profile or config
+AG 2 'printf -v AWS_CONFIG_FILE /tmp/c; export AWS_CONFIG_FILE'
+AG 2 'export AWS_SHARED_CREDENTIALS_FILE=/tmp/c'
+# K: aws-agent-bash input redirection, jq environment and files, follow mode
+check aws-agent-bash.sh 2 'jq . < notes.json'
+check aws-agent-bash.sh 2 "jq -n '\$ENV'"
+check aws-agent-bash.sh 2 'jq -n env'
+check aws-agent-bash.sh 2 'jq -R . <notes.txt'
+check aws-agent-bash.sh 2 "jq -n 'input'"
+check aws-agent-bash.sh 2 'jq -f x.jq a.json'
+check aws-agent-bash.sh 2 'jq --slurpfile a b.json -n .'
+check aws-agent-bash.sh 2 'tail -f app.log'
+check aws-agent-bash.sh 2 'tail -F app.log'
+check aws-agent-bash.sh 2 'tail --follow app.log'
+check aws-agent-bash.sh 2 'grep -r x .'
+check aws-agent-bash.sh 2 'grep -f pats.txt a'
+check aws-agent-bash.sh 2 'grep --include=x -R y'
+check aws-agent-bash.sh 2 'head ../x'
+check aws-agent-bash.sh 2 'head .env'
+check aws-agent-bash.sh 2 'date -f x'
+check aws-agent-bash.sh 2 'uniq a b'
+check aws-agent-bash.sh 2 'sort -o out a'
+check aws-agent-bash.sh 2 'rg foo'
+check aws-agent-bash.sh 2 'echo $HOME'
+check aws-agent-bash.sh 2 'echo hi &'
+check aws-agent-bash.sh 2 'echo a || echo b'
+check aws-agent-bash.sh 2 'echo "x"'
+check aws-agent-bash.sh 2 'echo a; ; echo b'
+check readonly-bash.sh 2 "jq -n '\$ENV'"
+check readonly-bash.sh 2 'jq -n env'
+check readonly-bash.sh 2 'jq --rawfile a b.json -n .'
+check readonly-bash.sh 2 'ls ~/.a*'
+# L: help without a profile only for aws help, aws <svc> help, aws <svc> <op> help on the allowlist
+AG 2 'aws s3 ls help'
+AG 2 'aws s3 rm help'
+AG 2 'aws ssm get-parameter help'
+AG 0 'aws help'
+AG 0 'aws ec2 help'
+# flag abbreviations, and --dry-run on several listed verbs
+AG 2 'aws --prof claude-agent sts get-caller-identity'
+AG 2 'aws --profile claude-agent ec2 stop-instances --instance-ids i-1 --dry-run --no-d'
+AG 2 'aws --profile claude-agent sts get-caller-identity --de'
+AG 2 'aws --profile claude-agent ec2 start-instances --instance-ids i-1 --dry'
+AG 0 'aws --profile claude-agent ec2 start-instances --instance-ids i-1 --dry-run'
+AG 0 'aws --profile claude-agent ec2 reboot-instances --instance-ids i-1 --dry-run'
+AG 0 'aws --profile claude-agent ec2 create-tags --resources i-1 --tags Key=a,Value=b --dry-run'
+AG 0 'aws --profile claude-agent ec2 delete-volume --volume-id vol-1 --dry-run'
+AG 2 'aws --profile claude-agent ec2 reboot-instances --instance-ids i-1'
+AG 2 'aws --profile claude-agent ec2 delete-volume --volume-id vol-1'
+# false-positive guards: these stay allowed
+check guard-aws.sh 0 'git commit -m "feat: add aws-engineer guard (cdk deploy blocked)"'
+check guard-aws.sh 0 'grep -rn "aws ec2" docs'
+check guard-aws.sh 0 'rg boto3'
+check guard-aws.sh 0 'echo "$(date)"'
+check guard-aws.sh 0 'x=$(git rev-parse HEAD); echo $x'
+check guard-aws.sh 0 'for f in *.md; do wc -l "$f"; done'
+check guard-aws.sh 0 '~/.claude/hooks/git-publish.sh status'
+check guard-aws.sh 0 'ls .github/workflows/*.yml 2>&1 | head -n 3'
+check guard-aws.sh 0 "cat <<'EOF'
+\$x and \${y}
+EOF"
+AG 0 "aws --profile claude-agent ec2 describe-instances --query 'Reservations[].Instances[].{id:InstanceId}'"
+AG 0 "aws sts get-caller-identity --profile claude-agent | jq '.Account'"
+AG 0 "aws --profile claude-agent --region eu-west-1 s3 ls | head -n 5"
+AG 0 "aws --profile claude-agent ec2 describe-instances --output text | cut -f1 | sort | uniq -c"
+AG 0 "aws --profile claude-agent ec2 describe-instances --filters 'Name=tag:Name,Values=web*' && date -u +%Y-%m-%d"
+check aws-agent-bash.sh 0 "jq -r '.. | .InstanceId? // empty' out.json"
+check aws-agent-bash.sh 0 "grep -c running out.txt; wc -l out.txt; tail -n +2 out.txt; cut -d' ' -f1 out.txt"
+check readonly-bash.sh 0 'rg -n foo src'
+check readonly-bash.sh 0 'sort -r --key=2 a.txt'
+check readonly-bash.sh 0 "jq '.name' package.json"
+check readonly-bash.sh 0 'ls .github/workflows'
+# deliberately strict: a command word built from an expansion is denied for every command
+check guard-aws.sh 2 '$EDITOR notes.md'
+# ---- round 3 ----
+# S1: shell startup files and auto-run configuration are not writable by agents
+checkw 2 "$HOME/.zshenv"
+checkw 2 "$HOME/.zshrc"
+checkw 2 '/x/.bashrc'
+checkw 2 '/x/.bash_profile'
+checkw 2 '/x/.profile'
+checkw 2 '/x/.inputrc'
+checkw 2 '.zprofile'
+checkw 2 "$HOME/.jq"
+checkw 2 "$HOME/.config/fish/config.fish"
+checkw 2 "$HOME/Library/LaunchAgents/x.plist"
+checkw 0 '/x/docs/zshrc-notes.md'
+checkw 0 '/x/profile.md'
+# S2: readonly-bash fails closed on expansion and escapes (ANSI-C, zsh glob groups)
+check readonly-bash.sh 2 "cat ~/\$'\\x2e'aws/sso/cache/*.json"
+check readonly-bash.sh 2 "cat ~/\$'\\056'aws/sso/cache/x.json"
+check readonly-bash.sh 2 "cat ~/\$'.a\\x77s'/sso/cache/x.json"
+check readonly-bash.sh 2 'cat ~/.(a)ws/sso/cache/x.json'
+check readonly-bash.sh 2 'cat "$HOME/x"'
+check readonly-bash.sh 2 'cat ~/.a${x}ws/credentials'
+check readonly-bash.sh 2 'echo {a,b}'
+check readonly-bash.sh 2 'ls \.'
+check_msg readonly-bash.sh 'Blocked by readonly-bash: $ outside single quotes' "cat ~/\$'\\x2e'aws/x"
+for c in 'git log --oneline -5' 'git diff --stat origin/main' "grep -rn 'foo' src" 'ls -la' 'cat README.md' \
+         "find . -name '*.md'" 'wc -l x' 'git status --short' 'grep -rn "foo bar" src' "grep -rn '\\.aws' src" \
+         'sort --key 2 a.txt' 'git log --oneline --no-ext-diff -p' 'git show --stat HEAD'; do
+  check readonly-bash.sh 0 "$c"
+done
+# S3: git pager, output, external diff, textconv, filters and config injection
+check readonly-bash.sh 2 "git grep --op='sh -c \"id\" x' -e . -- README.md"
+check readonly-bash.sh 2 "git grep -iO'sh -c \"id\" x' -e . -- README.md"
+check readonly-bash.sh 2 'git diff --ext README.md'
+check readonly-bash.sh 2 'git diff --out=x'
+check readonly-bash.sh 2 'git log --textconv -p'
+check readonly-bash.sh 2 'git cat-file --filters HEAD:x'
+check readonly-bash.sh 2 'git -c core.pager=x log'
+check readonly-bash.sh 2 'git -c diff.external=x diff'
+check readonly-bash.sh 2 'git --config-env=core.pager=X log'
+check readonly-bash.sh 2 'git --exec-path=/tmp log'
+# S4: find -exec words with expansions or escapes
+AG 2 "find . -maxdepth 0 -exec \$'\\x61ws' sts get-caller-identity \\;"
+check guard-aws.sh 2 'x=a; find . -exec ${x}ws ec2 stop-instances \;'
+check guard-aws.sh 0 "find . -name '*.md' -exec grep -l foo {} \\;"
+# S5: sed scripts limited to p, d, q, = and plain s///
+check readonly-bash.sh 2 "sed -n '1e id' README.md"
+check readonly-bash.sh 2 "sed 's/a/b/e' x"
+check readonly-bash.sh 2 "sed -n '/x/W out' f"
+check readonly-bash.sh 2 "sed -n '1r /etc/passwd' f"
+check readonly-bash.sh 2 'sed -f s.sed x'
+check readonly-bash.sh 2 "sed -e 's/a/b/w out' x"
+check_msg readonly-bash.sh 'Blocked by readonly-bash: sed script' "sed -n '1e id' README.md"
+check readonly-bash.sh 0 "sed -n '1,20p' README.md"
+check readonly-bash.sh 0 "sed 's/foo/bar/g' x"
+check readonly-bash.sh 0 "sed -n '/^## /p' README.md"
+check readonly-bash.sh 0 "sed -n '\$p' x"
+check readonly-bash.sh 0 "sed -E 's/a\\.b/c/' x"
+# S6: tail and head counts are plain numbers
+check aws-agent-bash.sh 2 'tail -5f README.md'
+check aws-agent-bash.sh 2 'tail -n 5f x'
+check aws-agent-bash.sh 0 'tail -5 x'
+# S7: jq $ ENV with a space, and comments before a variable
+check aws-agent-bash.sh 2 "jq -n '\$ ENV'"
+check readonly-bash.sh 2 "jq -n '\$ ENV'"
+check aws-agent-bash.sh 2 "jq -n '.a # \$x'"
+check readonly-bash.sh 2 "jq -n '.a # \$x'"
+# S8: more credential paths in aws-agent-bash
+for p in .git-credentials .zsh_history .bash_history x.tfstate prod.tfvars .config/gcloud/c .azure/c .cargo/credentials .npmrc .pypirc .env .env.local d/.env; do
+  check aws-agent-bash.sh 2 "head $p"
+done
+check aws-agent-bash.sh 0 "jq '.Environment' x.json"
+check aws-agent-bash.sh 0 "jq -r '.Reservations[].Instances[].InstanceId' out.json"
+# R1: quoted heredoc commit messages are data
+check guard-aws.sh 0 "git commit -m \"\$(cat <<'EOF'
+feat: add AWS engineer agent
+
+cdk deploy blocked; AWS_PROFILE pinned
+EOF
+)\""
+check guard-aws.sh 0 "git commit -F - <<'EOF'
+feat: add AWS engineer agent
+
+cdk deploy blocked; AWS_PROFILE pinned
+EOF"
+check guard-aws.sh 0 "~/.claude/hooks/git-publish.sh commit -m \"\$(cat <<'EOF'
+feat: add AWS engineer agent
+
+cdk deploy blocked; AWS_PROFILE pinned
+EOF
+)\""
+check guard-aws.sh 0 '~/.claude/hooks/git-publish.sh plan --title-file a --body-file b'
+check guard-aws.sh 2 "cat <<'EOF' | sh
+aws --profile admin ec2 stop-instances
+EOF"
+check guard-aws.sh 2 "bash <<'EOF'
+aws --profile admin ec2 stop-instances
+EOF"
+check guard-aws.sh 2 "git commit -m \"\$(cat <<EOF
+\$(aws --profile admin ec2 stop-instances)
+EOF
+)\""
+# R2: AWS_* only as an assignment, set through a builtin, or on a line that runs aws, a runner or a shell
+check guard-aws.sh 0 'grep -rn AWS_REGION src | head'
+check guard-aws.sh 0 'git diff | grep AWS_'
+check guard-aws.sh 0 'echo AWS_REGION'
+check guard-aws.sh 2 'AWS_DEFAULT_REGION=us-east-1 pytest'
+check guard-aws.sh 2 'env AWS_PROFILE=x npm test'
+check guard-aws.sh 2 'declare -x AWS_PROFILE=x'
+check guard-aws.sh 2 'read AWS_PROFILE'
+check guard-aws.sh 2 'export "AW${x}S_PROFILE=x"'
+check guard-aws.sh 2 'npm test -- AWS_REGION'
+check guard-aws.sh 2 'aws --profile claude-agent sts get-caller-identity; echo AWS_PROFILE'
+# R3: script paths in plain variables, without -c and without aws on the line
+for c in 'source "$HOME/.cargo/env"' '. "$NVM_DIR/nvm.sh"' 'for f in tests/*.sh; do bash "$f"; done' \
+         '"$VIRTUAL_ENV/bin/python" -m pytest' '"$(git rev-parse --show-toplevel)/install.sh" --dry-run'; do
+  check guard-aws.sh 0 "$c"
+done
+check guard-aws.sh 2 'for f in tests/*.sh; do bash "$f" aws; done'
+check guard-aws.sh 2 '"$VIRTUAL_ENV/bin/aws" s3 ls'
+check guard-aws.sh 2 'X=/usr/local/bin; "$X/tool" s3 ls'
+check guard-aws.sh 2 'bash -c "$f"'
+check guard-aws.sh 2 '"$(printf x)/y" z'
+check guard-aws.sh 2 '$X$Y/tool ec2'
+# R4: deny messages
+check_msg guard-aws.sh 'BLOCKED by guard-aws: aws --region needs a plain region name' "aws --profile claude-agent --region 'us east' ec2 describe-instances"
+# R5: the right hook denies for the right reason
+check_msg guard-aws.sh 'BLOCKED by guard-aws: aws ec2 describe-instance-attribute userdata' 'aws --profile claude-agent ec2 describe-instance-attribute --instance-id i-1 --attribute "user""Data"'
+check_msg aws-agent-bash.sh 'BLOCKED by aws-agent-bash: character " outside single quotes' 'aws --profile claude-agent ec2 describe-instance-attribute --instance-id i-1 --attribute "user""Data"'
+check_msg aws-agent-bash.sh 'BLOCKED by guard-aws: aws ec2 describe-instance-attribute userdata' "aws --profile claude-agent ec2 describe-instance-attribute --instance-id i-1 --attribute 'user''Data'"
+check_msg guard-aws.sh 'BLOCKED by guard-aws: comment inside an aws command' 'aws --profile claude-agent ec2 terminate-instances --instance-ids i-1 # --dry-run'
+check_msg guard-aws.sh 'BLOCKED by guard-aws: AWS_* environment assignment' 'AWS_DEFAULT_REGION=us-east-1 pytest'
+check_msg aws-agent-bash.sh 'BLOCKED by aws-agent-bash: tail count' 'tail -5f README.md'
+
 # missing or malformed input fails closed; valid input without a command stays allowed
 check guard-bash.sh 0 'echo hi'
 check_input() {
@@ -315,7 +667,7 @@ check_input() {
   got=$?
   if [ "$got" = "$want" ]; then echo "ok    [$hook] input: $input"; else echo "FAIL  [$hook] want=$want got=$got: input: $input"; fail=1; fi
 }
-for h in guard-bash.sh guard-write.sh readonly-bash.sh; do
+for h in guard-bash.sh guard-write.sh readonly-bash.sh guard-aws.sh aws-agent-bash.sh; do
   check_input "$h" 2 '{bad json'
   check_input "$h" 2 '{"tool_input":'
   check_input "$h" 0 '{}'
@@ -324,7 +676,7 @@ done
 # jq missing: run with an empty PATH directory
 NOJQ=$(mktemp -d)
 BASH_BIN=$(command -v bash)
-for h in guard-bash.sh guard-write.sh readonly-bash.sh; do
+for h in guard-bash.sh guard-write.sh readonly-bash.sh guard-aws.sh aws-agent-bash.sh; do
   printf '%s' '{"tool_input":{"command":"ls","file_path":"/x/y"}}' | PATH="$NOJQ" "$BASH_BIN" "$HOOKS/$h" >/dev/null 2>&1
   got=$?
   if [ "$got" = 2 ]; then echo "ok    [$h] jq missing"; else echo "FAIL  [$h] jq missing: want=2 got=$got"; fail=1; fi
