@@ -10,6 +10,11 @@ INPUT=$(cat)
 TOOL=$(printf '%s' "$INPUT" | jq -r 'if (.tool_name | type) == "string" then .tool_name else empty end' 2>/dev/null) || { echo "BLOCKED by guard-mcp-playwright: could not parse its JSON input" >&2; exit 2; }
 [ -z "$TOOL" ] && { echo "BLOCKED by guard-mcp-playwright: empty input or no string tool_name" >&2; exit 2; }
 
+# Carve-out: the web-scraper's public-web browser server "playwright-web" is judged by guard-mcp-web.sh, not here.
+# This exit 0 relies on guard-mcp-web.sh being registered globally for mcp__playwright-web__* (lint asserts it).
+# Exact, case-sensitive prefix: playwright-webX, playwright-web2 and playwright are not carved out.
+case "$TOOL" in mcp__playwright-web__*) exit 0 ;; esac
+
 deny() {
   echo "BLOCKED by guard-mcp-playwright: $1 ($TOOL). Do not retry or work around this. Report it to the orchestrator or ask the user." >&2
   exit 2
