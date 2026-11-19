@@ -1903,4 +1903,263 @@ for p in 'src/app.json' 'README.md'; do
   if [ "$got" = 0 ]; then echo "ok    [guard-write.sh] notebook_path $p"; else echo "FAIL  [guard-write.sh] notebook_path want=0 got=$got: $p"; fail=1; fi
 done
 
+# ---- guard-mcp-web.sh (default-deny web MCP allowlist; public http(s) URLs only) ----
+WEBHOOK="$HOOKS/guard-mcp-web.sh"
+webh() { # webh <hook path> <label> <want exit> <deny prefix> <raw stdin>
+  local hook=$1 label=$2 want=$3 pfx=$4 input=$5 got err
+  err=$(printf '%s' "$input" | "$hook" 2>&1 >/dev/null); got=$?
+  if [ "$got" = "$want" ] && { [ "$want" = 0 ] || grep -q "^BLOCKED by $pfx:" <<<"$err"; }; then
+    echo "ok    [$label] ${input:0:150}"
+  else
+    echo "FAIL  [$label] want=$want got=$got: $input stderr=$err"; fail=1
+  fi
+}
+web() { # web <want exit> <tool name> <tool_input JSON>
+  local in
+  in=$(jq -nc --arg t "$2" --argjson i "$3" '{tool_name:$t,tool_input:$i}') || { echo "FAIL  bad test JSON: $2 $3"; fail=1; return; }
+  webh "$WEBHOOK" guard-mcp-web.sh "$1" guard-mcp-web "$in"
+}
+web_raw() { webh "$WEBHOOK" guard-mcp-web.sh "$1" guard-mcp-web "$2"; }
+WF=mcp__fetch__fetch; WN=mcp__playwright-web__browser_navigate
+FS=mcp__firecrawl__firecrawl_scrape; FM=mcp__firecrawl__firecrawl_map
+# allowed baseline per tool
+web 0 $WF '{"url":"https://example.com/a?b=1#c","max_length":5000,"start_index":0,"raw":false,"timeout_ms":3000}'
+web 0 $WF '{"url":"http://example.com:80/"}'
+web 0 $WF '{"url":"https://example.com:443/"}'
+web 0 $WN '{"url":"https://example.com/"}'
+web 0 mcp__playwright-web__browser_navigate_back '{}'
+web 0 mcp__playwright-web__browser_snapshot '{"target":"e1","depth":3}'
+web 0 mcp__playwright-web__browser_wait_for '{"time":30}'
+web 0 mcp__playwright-web__browser_wait_for '{"text":"Done","textGone":"Loading"}'
+web 0 mcp__playwright-web__browser_click '{"target":"e5","element":"Next","doubleClick":false,"button":"middle"}'
+web 0 mcp__playwright-web__browser_press_key '{"key":"PageDown"}'
+web 0 mcp__playwright-web__browser_network_requests '{"static":false,"filter":"/api","all":true}'
+web 0 mcp__playwright-web__browser_tabs '{"action":"list"}'
+web 0 mcp__playwright-web__browser_tabs '{"action":"select","index":1}'
+web 0 mcp__playwright-web__browser_handle_dialog '{"accept":false}'
+web 2 mcp__playwright-web__browser_handle_dialog '{"accept":true}'
+web 2 mcp__playwright-web__browser_handle_dialog '{"accept":"false"}'
+web 2 mcp__playwright-web__browser_handle_dialog '{}'
+web 0 mcp__playwright-web__browser_close '{}'
+web 0 $FS '{"url":"https://example.com","formats":["markdown","html","rawHtml","links"],"onlyMainContent":true,"redactPII":true,"includeTags":["a"],"excludeTags":["nav"],"waitFor":500,"timeout":20000}'
+web 0 $FM '{"url":"https://example.com","search":"blog","limit":200,"includeSubdomains":false,"sitemap":"include","ignoreQueryParameters":true}'
+web 0 $FM '{"url":"https://example.com","limit":1,"sitemap":"only"}'
+# URL tricks: IP literals in any form, local and wildcard-DNS hosts, authority tricks, schemes
+for u in 'http://2130706433/' 'http://0x7f.1/' 'http://0177.0.0.1/' 'http://127.1/' 'http://[::ffff:127.0.0.1]/' \
+  'http://169.254.169.254/latest/meta-data/' 'https://10.0.0.1/' 'http://[::1]/' \
+  'https://localhost/' 'https://foo.localhost/' 'https://a.internal/' 'https://printer.local/' 'https://x.nip.io/' \
+  'https://metadata.google.internal/' 'https://nodot/' 'https://u@example.com/' \
+  'https://example.com:8080/' 'HTTP://example.com/' 'file:///etc/passwd' 'javascript:alert(1)' 'ftp://example.com/' \
+  'https://example.com/ x' 'https://exa mple.com/' 'https://example.com\@evil.com/' 'https://exa%6dple.com/' \
+  'https://127.0.0.1.sslip.io/' 'https://a.lan/' 'https://a.corp/' 'https://a.localtest.me/' \
+  'https://localho.st/' 'https://x.localho.st/' 'https://vcap.me/' 'https://a.vcap.me/' 'https://local.gd/' \
+  'https://a.b.local.gd/' 'https://traefik.me/' 'https://10.0.0.1.traefik.me/' 'https://lacolhost.com/' \
+  'https://a.lacolhost.com/' 'https://LOCALHO.ST./' 'https://lvh.me/' 'https://a.lvh.me/' ''; do
+  web 2 $WF "$(jq -nc --arg u "$u" '{url:$u}')"
+  web 2 $WN "$(jq -nc --arg u "$u" '{url:$u}')"
+done
+# not mistaken for the blocked names
+web 0 $WF '{"url":"https://notlocalho.st/"}'
+web 0 $WF '{"url":"https://myvcap.me/"}'
+# URL length cap: 2048 characters allowed, 2049 denied
+U2048="https://example.com/$(printf '%2028s' '' | tr ' ' a)"
+web 0 $WF "$(jq -nc --arg u "$U2048" '{url:$u}')"
+web 2 $WF "$(jq -nc --arg u "${U2048}b" '{url:$u}')"
+web 2 $WN "$(jq -nc --arg u "${U2048}b" '{url:$u}')"
+web 2 $FS "$(jq -nc --arg u "${U2048}b" '{url:$u}')"
+[ "${#U2048}" = 2048 ] || { echo "FAIL  test URL length ${#U2048} != 2048"; fail=1; }
+web 2 $FS '{"url":"http://127.0.0.1/"}'
+web 2 $FM '{"url":"https://localhost/","limit":10}'
+web 2 $WF '{"url":123}'
+web 2 $WF '{}'
+# unexpected or malformed arguments
+web 2 $WF '{"url":"https://example.com","headers":{}}'
+web 2 mcp__playwright-web__browser_snapshot '{"filename":"x.md"}'
+web 2 mcp__playwright-web__browser_network_requests '{"filename":"x.txt"}'
+web 2 mcp__playwright-web__browser_click '{"target":"e5","modifiers":["Shift"]}'
+web 2 mcp__playwright-web__browser_click '{"target":"e5","button":"back"}'
+web 2 mcp__playwright-web__browser_tabs '{"action":"new","url":"https://example.com"}'
+web 2 mcp__playwright-web__browser_tabs '{"action":"list","isolatedContext":"x"}'
+web 2 mcp__playwright-web__browser_handle_dialog '{"accept":false,"promptText":"x"}'
+web 2 mcp__playwright-web__browser_wait_for '{"time":31}'
+web 2 mcp__playwright-web__browser_wait_for '{"time":-1}'
+web 2 mcp__playwright-web__browser_press_key '{"key":"Enter"}'
+web 2 mcp__playwright-web__browser_navigate_back '{"x":1}'
+web 2 $FS '{"url":"https://example.com","actions":[{"type":"click","selector":"a"}]}'
+web 2 $FS '{"url":"https://example.com","jsonOptions":{"prompt":"x"}}'
+web 2 $FS '{"url":"https://example.com","proxy":"stealth"}'
+web 2 $FS '{"url":"https://example.com","skipTlsVerification":true}'
+web 2 $FS '{"url":"https://example.com","formats":["screenshot"]}'
+web 2 $FS '{"url":"https://example.com","formats":["json"]}'
+web 2 $FS '{"url":"https://example.com","formats":["markdown","json"]}'
+for l in 0 201 500 '"10"' -1 1.5 null; do web 2 $FM "{\"url\":\"https://example.com\",\"limit\":$l}"; done
+web 2 $FM '{"url":"https://example.com"}'
+web 2 $FM '{"url":"https://example.com","limit":10,"includeSubdomains":true}'
+web 2 $FM '{"url":"https://example.com","limit":10,"sitemap":"all"}'
+# denied tools and misnamed servers
+for t in browser_evaluate browser_run_code_unsafe browser_type browser_fill_form browser_file_upload browser_take_screenshot browser_select_option; do
+  web 2 mcp__playwright-web__$t '{}'
+done
+for t in firecrawl_crawl firecrawl_search firecrawl_extract firecrawl_agent firecrawl_browser_create; do web 2 mcp__firecrawl__$t '{"url":"https://example.com"}'; done
+web 2 mcp__fetch__fetch_x '{"url":"https://example.com"}'
+web 2 mcp__fetch2__fetch '{"url":"https://example.com"}'
+web 2 mcp__Fetch__fetch '{"url":"https://example.com"}'
+web 2 mcp__my_fetch__fetch '{"url":"https://example.com"}'
+web 2 mcp__playwright-webX__browser_navigate '{"url":"https://example.com"}'
+web 2 mcp__playwright-web2__browser_navigate '{"url":"https://example.com"}'
+web 2 mcp__Playwright-Web__browser_navigate '{"url":"https://example.com"}'
+web 2 mcp__firecrawl2__firecrawl_scrape '{"url":"https://example.com"}'
+web 2 mcp__Firecrawl__firecrawl_scrape '{"url":"https://example.com"}'
+web 2 mcp__other__fetch '{"url":"https://example.com"}'
+web 2 Bash '{"command":"ls"}'
+# matcher routing (settings.managed.json; grep -E approximates Claude Code's unanchored regex match)
+WM=$(jq -r '.hooks.PreToolUse[] | select(any(.hooks[]; .command | endswith("/guard-mcp-web.sh"))) | .matcher' "$HOOKS/../settings.managed.json")
+for t in mcp__fetch__fetch mcp__Fetch__fetch mcp__FETCH__x mcp__playwright-web__browser_navigate mcp__Playwright-Web__browser_tabs \
+  mcp__playwright-webX__browser_navigate mcp__firecrawl__firecrawl_scrape mcp__firecrawl2__firecrawl_crawl mcp__my_firecrawl__x; do
+  if printf '%s\n' "$t" | grep -Eq -- "$WM"; then echo "ok    [web matcher] routes $t"; else echo "FAIL  [web matcher] does not route $t"; fail=1; fi
+done
+for t in mcp__other__fetch_page mcp__other__fetch mcp__fetcher__get mcp__playwright__browser_navigate mcp__serena__find_symbol WebFetch; do
+  if printf '%s\n' "$t" | grep -Eq -- "$WM"; then echo "FAIL  [web matcher] routes unrelated $t"; fail=1; else echo "ok    [web matcher] skips $t"; fi
+done
+# malformed input fails closed
+web_raw 2 ''
+web_raw 2 'not json'
+web_raw 2 '{"tool_name":"mcp__fetch__fetch","tool_input":'
+web_raw 2 '{"tool_input":{"url":"https://example.com"}}'
+web_raw 2 '{"tool_name":7,"tool_input":{"url":"https://example.com"}}'
+web_raw 2 '{"tool_name":"mcp__fetch__fetch","tool_input":"x"}'
+web_raw 2 '{"tool_name":"mcp__fetch__fetch"}'
+
+# ---- scrape-agent-write.sh (Write only, under $HOME/scrape-out/, allowed extensions and names, no symlink escapes) ----
+SAWHOOK="$HOOKS/scrape-agent-write.sh"
+SAWT=$(mktemp -d "${TMPDIR:-/tmp}/scrape-write-test.XXXXXX"); SAWT=${SAWT//\/\///}
+SAWHOME="$SAWT/home"
+saw() { # saw <want exit> <tool name> <file_path>   (HOME is $SAWHOME)
+  local in
+  in=$(jq -nc --arg t "$2" --arg p "$3" '{tool_name:$t,tool_input:{file_path:$p,content:"x"}}')
+  HOME="$SAWHOME" webh "$SAWHOOK" scrape-agent-write.sh "$1" scrape-agent-write "$in"
+}
+sawhome() { # sawhome <want exit> <HOME value> <file_path>
+  local in
+  in=$(jq -nc --arg p "$3" '{tool_name:"Write",tool_input:{file_path:$p,content:"x"}}')
+  HOME="$2" webh "$SAWHOOK" "scrape-agent-write.sh HOME=$2" "$1" scrape-agent-write "$in"
+}
+mkdir -p "$SAWHOME/scrape-out/sub" "$SAWT/outside" "$SAWT/proj/scrape-out" "$SAWHOME/.claude/scrape-out"
+ln -s "$SAWT/outside" "$SAWHOME/scrape-out/link_dir"
+ln -s "$SAWT/outside/x.json" "$SAWHOME/scrape-out/link_file.json"
+ln -s "$SAWT/outside" "$SAWHOME/scrape-out/sub/deep_link"
+mkdir -p "$SAWT/realhome/scrape-out" && ln -s "$SAWT/realhome" "$SAWT/linkhome"
+mkdir -p "$SAWT/home2" "$SAWT/elsewhere" && ln -s "$SAWT/elsewhere" "$SAWT/home2/scrape-out"
+S="$SAWHOME/scrape-out"
+saw 0 Write "$S/out.json"
+saw 0 Write "$S/new/dir/out.jsonl"
+saw 0 Write "$S/sub/out.csv"
+saw 0 Write "$S/notes.md"
+saw 0 Write "$S/scrape_example.py"
+saw 0 Write "$S/x/data.json"
+saw 0 Write "$S/README.md"
+saw 0 Write "$S/x/scrape_contest.py"
+saw 0 Write "$S/x/scrape_my_test_helper.py"
+saw 0 Write "$S/x/scrape_testing.py"
+saw 0 Write "$S/scrape_shop.py"
+saw 0 Write "$S/SCRAPE_shop.py"
+saw 0 Write "$S/a/b/data.json"
+saw 2 Write "$S/httpx.py"
+saw 2 Write "$S/argparse.py"
+saw 2 Write "$S/bs4.py"
+saw 2 Write "$S/x.py"
+saw 2 Write "$S/scrape_a.b.py"
+saw 2 Write "$S/scrape_a b.py"
+saw 2 Write "$S/a/.github/x.md"
+saw 2 Write "$S/.cursor/rules/r.md"
+saw 2 Write "$S/.vscode/s.json"
+saw 2 Edit "$S/out.json"
+saw 2 MultiEdit "$S/out.json"
+saw 2 NotebookEdit "$S/out.json"
+saw 2 Bash "$S/out.json"
+saw 2 Write "$S/run.sh"
+saw 2 Write "$S/out.txt"
+saw 2 Write "$S/noext"
+saw 2 Write "$S/.hidden.json"
+saw 2 Write "$S/.json"
+# auto-loaded or agent-instruction basenames, any case
+for b in conftest.py sitecustomize.py usercustomize.py setup.py __init__.py __main__.py noxfile.py test_x.py test_.py \
+  x_test.py CONFTEST.py Test_X.py X_TEST.PY Setup.py claude.md CLAUDE.md claude.local.md CLAUDE.local.md agents.md \
+  AGENTS.md gemini.md Gemini.MD; do
+  saw 2 Write "$S/x/$b"
+done
+# paths outside $HOME/scrape-out (repo or other scrape-out dirs are no longer allowed)
+saw 2 Write "$SAWT/proj/scrape-out/a.json"
+saw 2 Write "$SAWT/proj/scrape-out/t.json"
+saw 2 Write "/tmp/x/scrape-out/t.json"
+saw 2 Write "$SAWHOME/sub/scrape-out/a.json"
+saw 2 Write "$SAWHOME/out.json"
+saw 2 Write "$SAWHOME/scrape-out.json"
+saw 2 Write "$SAWHOME/xscrape-out/a.json"
+saw 2 Write "$SAWHOME/scrape-out"
+saw 2 Write "$S/../escape.json"
+saw 2 Write "$S/sub/../../escape.json"
+saw 2 Write "$S/./out.json"
+saw 2 Write "$S//out.json"
+saw 2 Write "$SAWHOME//scrape-out/out.json"
+saw 2 Write "scrape-out/out.json"
+saw 2 Write "./scrape-out/out.json"
+saw 2 Write ""
+saw 2 Write "$SAWHOME/.claude/scrape-out/a.json"
+saw 2 Write "$S/.claude/a.json"
+saw 2 Write "$S/.CLAUDE/a.json"
+saw 2 Write "$S/.git/a.json"
+saw 2 Write "$S/.config/a.json"
+saw 2 Write "$S/.ssh/a.json"
+saw 2 Write "$S/.aws/a.json"
+# control characters, including a trailing newline that $(...) would strip
+saw 2 Write "$S/a"$'\t'"b.json"
+saw 2 Write "$S/a.md"$'\n'
+saw 2 Write "$S/a.md"$'\r'
+saw 2 Write "$S/a"$'\n'"b.json"
+saw 2 Write "$S/a"$'\x7f'".json"
+webh "$SAWHOOK" scrape-agent-write.sh 2 scrape-agent-write "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$S/a.md\\u0000\"}}"
+# symlinks inside $HOME/scrape-out
+saw 2 Write "$S/link_dir/x.json"
+saw 2 Write "$S/link_dir/new.json"
+saw 2 Write "$S/link_file.json"
+saw 2 Write "$S/sub/deep_link/x.json"
+saw 2 Write "$S/sub/deep_link/n/x.json"
+# HOME itself: a symlinked HOME resolves physically; scrape-out as a symlink, unset, relative or / HOME are denied
+sawhome 0 "$SAWT/linkhome" "$SAWT/linkhome/scrape-out/a.json"
+sawhome 0 "$SAWT/linkhome/" "$SAWT/linkhome/scrape-out/a.json"
+sawhome 2 "$SAWT/linkhome" "$SAWT/realhome/scrape-out/a.json"
+sawhome 2 "$SAWT/home2" "$SAWT/home2/scrape-out/a.json"
+sawhome 2 "" "/scrape-out/a.json"
+sawhome 2 "/" "/scrape-out/a.json"
+sawhome 2 "home" "home/scrape-out/a.json"
+sawhome 2 "$SAWT/missing" "$SAWT/missing/scrape-out/a.json"
+in=$(jq -nc --arg p "$S/a.json" '{tool_name:"Write",tool_input:{file_path:$p,content:"x"}}')
+got=$(printf '%s' "$in" | env -u HOME "$SAWHOOK" >/dev/null 2>&1; echo $?)
+if [ "$got" = 2 ]; then echo "ok    [scrape-agent-write.sh] HOME unset"; else echo "FAIL  [scrape-agent-write.sh] HOME unset want=2 got=$got"; fail=1; fi
+webh "$SAWHOOK" scrape-agent-write.sh 2 scrape-agent-write ''
+webh "$SAWHOOK" scrape-agent-write.sh 2 scrape-agent-write 'not json'
+webh "$SAWHOOK" scrape-agent-write.sh 2 scrape-agent-write '{"tool_name":"Write"}'
+webh "$SAWHOOK" scrape-agent-write.sh 2 scrape-agent-write '{"tool_name":"Write","tool_input":{"file_path":5}}'
+webh "$SAWHOOK" scrape-agent-write.sh 2 scrape-agent-write "{\"tool_input\":{\"file_path\":\"$S/out.json\"}}"
+rm -rf "${SAWT:?}"
+
+# ---- guard-mcp-playwright.sh: exact playwright-web carve-out (handled by guard-mcp-web), loopback-only otherwise ----
+pw 0 mcp__playwright-web__browser_navigate '{"url":"https://example.com/"}'
+pw 0 mcp__playwright-web__browser_evaluate '{}'
+pw 2 mcp__playwright__browser_navigate '{"url":"https://example.com/"}'
+pw 0 mcp__playwright__browser_navigate '{"url":"http://localhost:3000/"}'
+pw 2 mcp__playwright-webX__browser_navigate '{"url":"http://localhost:3000/"}'
+pw 2 mcp__playwright-web2__browser_navigate '{"url":"http://localhost:3000/"}'
+pw 2 mcp__Playwright-Web__browser_navigate '{"url":"http://localhost:3000/"}'
+pw 2 mcp__playwright-webX__browser_evaluate '{}'
+
+# ---- guard-write.sh: scraper login storage state ----
+checkw 2 "$HOME/.config/claude-scrape/state.json"
+checkw 2 '/Users/neco/.config/claude-scrape/x'
+checkw 2 '/Users/neco/.CONFIG/Claude-Scrape/state.json'
+checkw 2 '/Users/neco/.config/CLAUDE-SCRAPE/state.json'
+checkw 0 '/Users/neco/.config/other-app/state.json'
+checkw 0 '/Users/neco/proj/claude-scrape/state.json'
+
 [ "$fail" = 0 ] && echo "All hook checks passed." || { echo "Some hook checks failed."; exit 1; }

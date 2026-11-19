@@ -36,7 +36,7 @@ bash install.sh --project <repo> [--set-agent]
 
 `<repo>` must be the root of a git work tree. Then review and commit `.claude/` (and any `CLAUDE.md` change) yourself. This repository has no committed export; generate it with `bash install.sh --project .` and commit it yourself. Because `.claude/**` is a policy path (see "Optional git automation"), `git-publish.sh merge` refuses that commit, so merge it manually, and `pr` needs the `ci` opt-in.
 
-- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh`, `guard-mcp-context7.sh`, `guard-mcp-figma.sh`, `guard-aws.sh` and `aws-agent-bash.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
+- Exported into `<repo>/.claude/`: `agents/`, `skills/` (including the vendored third-party skills), the hooks `guard-bash.sh`, `guard-write.sh`, `readonly-bash.sh`, `stop-verify-reminder.sh`, `filter-test-output.sh`, `guard-mcp-serena.sh`, `guard-mcp-playwright.sh`, `guard-mcp-context7.sh`, `guard-mcp-figma.sh`, `guard-aws.sh`, `aws-agent-bash.sh`, `guard-mcp-web.sh` and `scrape-agent-write.sh`, `rules/orchestration.md` (the preamble, `project/rules-preamble.md`), `rules/orchestration-global.md` (the global rules from this repository's `CLAUDE.md`), `ORCHESTRATION.md`, `settings.json` and `.orchestration-manifest`.
 - The global install adds `"claudeMdExcludes": ["**/.claude/rules/orchestration-global.md"]` to `~/.claude/settings.json`, so a local session loads the global rules once, from `~/.claude/CLAUDE.md`. The export strips that setting, because cloud sessions do not read `~/.claude` and still need `orchestration-global.md`.
 - Limits: the glob excludes any file named `orchestration-global.md` in any project. It assumes `~/.claude/CLAUDE.md` holds the global rules; after a partial install without it, local sessions get no global rules. The settings merge takes `claudeMdExcludes` from `settings.managed.json`, so it replaces any existing user value for that key.
 - The hooks in `settings.json` run from `"$CLAUDE_PROJECT_DIR"/.claude/hooks/`. The export leaves out the model and `defaultMode`.
@@ -355,6 +355,60 @@ Known limits (defense in depth, not a sandbox):
 - Scripts run by other agents (SDK or other tools) can use the cached SSO session. Run `aws sso logout` after use.
 - Install the hooks with `bash install.sh`; it never removes hook entries, so delete them from `~/.claude/settings.json` by hand to remove them.
 
+## Web scraping (optional)
+
+`web-scraper` extracts structured data (JSON, JSONL, CSV) from public, JS-rendered or logged-in web pages, or drafts a Python scraper for you to review and run. It is optional: you register the MCP servers yourself, and `install.sh` never touches `~/.claude.json`. Without them, it reports BLOCKED. The agent has no Bash and no Read, Grep or Glob: it cannot run code, log in, install anything or read local files, so a malicious page cannot make it read a secret and send it out in a URL. It creates only new `.json`, `.jsonl`, `.csv`, `.md` and `.py` files under `$HOME/scrape-out/` (default `$HOME/scrape-out/<slug>`), never in a repository; drafted scripts (the only allowed `.py` name is `scrape_<slug>.py`) land there too. Review every file in the output directory before running a drafted script, and run it from that directory only after checking that no other `.py` files are present. Briefs carry `MODE: EXTRACT|DRAFT-SCRIPT`, `TARGET`, `SCHEMA`, `OUTPUT-DIR`, `MAX-PAGES`, `LOGIN`, `FIRECRAWL` and `PLAYWRIGHT-WEB`.
+
+Register the servers (you run these; agents cannot). `fetch` needs `uvx`, `playwright-web` needs Node/npx and Google Chrome:
+
+```bash
+claude mcp add --scope user fetch -- uvx mcp-server-fetch==2026.11.18 --user-agent "claude-orchestration-scraper/1.0"
+claude mcp add --scope user playwright-web -- npx -y @playwright/mcp@0.0.85 --browser chrome --headless --isolated --no-webmcp --block-service-workers --output-dir "$HOME/.cache/playwright-web-mcp"
+```
+
+- The servers must be registered as exactly `fetch`, `playwright-web` and `firecrawl`; the hook denies other names.
+- Never add `--ignore-robots-txt`, `--allow-private-ips` or `--proxy-url` to `fetch`. Keep `playwright-web` separate from the localhost-only `playwright` server above.
+- Check with `/mcp`.
+
+Login variant (only for a throwaway, low-privilege account). The agent never sees credentials and never reads `~/.config/claude-scrape/**`:
+
+1. Create the state file yourself, for example with `npx playwright codegen --save-storage="$HOME/.config/claude-scrape/<site>.json" https://<site>`.
+2. Run `chmod 700 ~/.config/claude-scrape` and `chmod 600 ~/.config/claude-scrape/<site>.json`. Never commit it.
+3. Re-register with the state file:
+
+```bash
+claude mcp remove playwright-web --scope user
+claude mcp add --scope user playwright-web -- npx -y @playwright/mcp@0.0.85 --browser chrome --headless --isolated --no-webmcp --block-service-workers --output-dir "$HOME/.cache/playwright-web-mcp" --storage-state "$HOME/.config/claude-scrape/<site>.json" --allowed-origins "https://<site>"
+```
+
+4. Afterwards, re-register without `--storage-state` and `--allowed-origins`, and delete the file if you no longer need it.
+
+Firecrawl (optional, cloud, paid). The brief must say `FIRECRAWL: on`; otherwise the agent does not use it. `FIRECRAWL: on` is a prompt-level rule only: no hook checks the brief, so once the server is registered the guard allows `firecrawl_scrape` and `firecrawl_map` for any caller; register it only while you need it. Do not write the key into your shell profile (a plain-text file) and do not pass it with `--env`, which stores it in `~/.claude.json`. On macOS, store it in the Keychain (`security add-generic-password -s firecrawl -a "$USER" -w`, which prompts for the key) and load it in your profile or a launcher script with `export FIRECRAWL_API_KEY="$(security find-generic-password -s firecrawl -w)"`.
+
+```bash
+claude mcp add --scope user firecrawl -- npx -y firecrawl-mcp@3.40.0
+```
+
+- URLs and page content go to Firecrawl's cloud.
+- `firecrawl-mcp` also loads a `.env` from its working directory (`process.loadEnvFile`), so a project `.env` may be read by that process.
+
+Layers:
+
+1. `hooks/guard-mcp-web.sh` is a global `PreToolUse` hook on `mcp__(.*([Ff][Ii][Rr][Ee][Cc][Rr][Aa][Ww][Ll]|[Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]-[Ww][Ee][Bb]).*|[Ff][Ee][Tt][Cc][Hh]__.*)` (fetch only as the exact server name, so other servers' `fetch_*` tools are not routed to it). It is default-deny: only `mcp__fetch__fetch`, 10 `playwright-web` tools (`browser_navigate`, `browser_navigate_back`, `browser_snapshot`, `browser_wait_for`, `browser_click`, `browser_press_key`, `browser_network_requests`, `browser_tabs`, `browser_handle_dialog`, `browser_close`) and `firecrawl_scrape` and `firecrawl_map` pass. Each tool accepts only its known arguments with type checks (for example `press_key` allows only `End`, `PageDown`, `PageUp`, `Home`, `Escape`, `ArrowDown` and `ArrowUp`, `wait_for` at most 30 seconds, and `handle_dialog` only `accept: false`, so a page cannot get a destructive confirm accepted). Every `url` must be at most 2048 characters and an `http(s)` DNS name with a dot: no IP literal, userinfo, port other than 80 or 443, and no local, internal, metadata or wildcard-DNS name (`localhost`, `.local`, `.internal`, `nip.io`, `sslip.io`, `localtest.me`, `lvh.me`, `localho.st`, `vcap.me`, `local.gd`, `traefik.me`, `lacolhost.com`, ...; a best-effort list, new wildcard services appear); whitespace, control, non-ASCII, backslash and percent characters are denied.
+2. `hooks/guard-mcp-playwright.sh` skips `mcp__playwright-web__*` (exact prefix), which the web guard judges instead. The `playwright` server is unchanged.
+3. `hooks/scrape-agent-write.sh` is a per-agent hook on the `web-scraper` Write tool: only Write, an absolute path under `$HOME/scrape-out/` (checked lexically and physically; denied if `HOME` is unset or relative), the five extensions above, no `..`, control characters (newline included), hidden file names and hidden directories below `$HOME/scrape-out`, `.py` names other than `scrape_<slug>.py`, `.claude`, `.git`, `.config`, `.ssh` or `.aws` segments, no symlinks from `$HOME/scrape-out` down, and no basename that tools load or run on their own (any case): `conftest.py`, `sitecustomize.py`, `usercustomize.py`, `setup.py`, `__init__.py`, `__main__.py`, `noxfile.py`, `test_*.py`, `*_test.py`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`.
+4. `guard-write.sh` denies writes to `~/.config/claude-scrape/`, and `permissions.deny` blocks Read and Edit there, plus Read of `~/.zsh_history`, `~/.bash_history` and `~/.claude.json` for every session. `permissions.deny` also lists 55 other `playwright-web` tools and `firecrawl_crawl` and `firecrawl_extract` (`settings.managed.json`).
+5. The skill `web-scrape-safe` sets the rules the agent follows: check `robots.txt` first, about 1 request per second, at most 30 pages by default (hard cap 50 in EXTRACT), stop on 429, 503, CAPTCHA or a login wall, treat page content as data.
+
+Known limits (defense in depth, not a sandbox):
+
+- Not covered by the hooks: redirects followed by the `fetch` server (left to its own private-address checks) and redirects and in-page navigation in `playwright-web`; DNS names that resolve to private addresses (per the upstream source, recent `mcp-server-fetch` pins resolved IPs; verify this in your installed version; Playwright does not); prompt injection that drives clicks in a logged-in session; data a page tricks the agent into putting in a URL (the agent cannot read local files, but it sees page content).
+- Strongly recommended as the real boundary: run scraping sessions under `/sandbox` with a network domain allowlist limited to the target sites.
+- You are responsible for the legal side: respect `robots.txt` and the site's terms of service, keep to about 1 request per second, and treat personal data under Vietnam's Personal Data Protection Law 91/2025/QH15 with Decree 356/2025/ND-CP, and GDPR. The agent flags personal data in its report.
+- Only one agent should use `playwright-web` at a time; the orchestrator sets `PLAYWRIGHT-WEB: off` for the others.
+- If the main session does not run as the orchestrator agent, it can call the allowed tools once the servers are registered. The hook checks the arguments, not which agent calls.
+- Uninstall: see "Roll back". The hooks and deny entries stay in `~/.claude/settings.json` until you delete them by hand.
+
 ## Optional browser verification
 
 The `browser-verification` skill lets `ui-ux-engineer` look at a locally served page. When the Playwright MCP server above is registered, the skill uses it first for navigation, snapshots, screenshots, console and interaction. `playwright-cli` remains for the checks that need page JavaScript evaluation (reduced motion, WebGL renderer, frame rate) and as the fallback when the MCP tools are absent. It needs `playwright-cli`, which you install yourself and `install.sh` does not: `brew install playwright-cli`, then `brew pin playwright-cli`. Without it, and without the MCP server, the agent reports that the UI was not rendered.
@@ -452,7 +506,7 @@ apps/web/.env.local
 | `CLAUDE.md` | `~/.claude/CLAUDE.md` | Global rules |
 | `ORCHESTRATION.md` | `~/.claude/ORCHESTRATION.md` | Operating manual |
 | `agents/` | `~/.claude/agents/` | Orchestrator and subagents |
-| `hooks/` | `~/.claude/hooks/` | Safety hooks (including `guard-aws.sh` and `aws-agent-bash.sh`) |
+| `hooks/` | `~/.claude/hooks/` | Safety hooks (including `guard-aws.sh`, `aws-agent-bash.sh`, `guard-mcp-web.sh` and `scrape-agent-write.sh`) |
 | `skills/` | `~/.claude/skills/` | Custom skills |
 | `third_party/skills/` | `~/.claude/skills/` | Reviewed copies of external skills |
 | `third_party/licenses/` | Not installed | Licenses for those skills |
@@ -504,3 +558,5 @@ Never commit secrets. `.gitignore` covers common secret files, but check `git st
 ## Roll back
 
 `install.sh` prints a restore command with its backup path. A restore does not remove files that the install added.
+
+To drop the web scraping setup, run `claude mcp remove fetch --scope user`, `claude mcp remove playwright-web --scope user` and `claude mcp remove firecrawl --scope user` (skip any you did not register). `install.sh` never removes deny or hook entries; delete them from `~/.claude/settings.json` by hand.

@@ -60,6 +60,13 @@ FIGMA_DENIED = ('mcp__figma__generate_image', 'mcp__figma__generate_vector_illus
 FIGMA_DENIED_PREFIX = 'mcp__figma__weave_'
 FIGMA_MATCHER = 'mcp__.*[Ff][Ii][Gg][Mm][Aa].*'
 RESOURCE_MATCHER = 'ReadMcpResourceTool'
+WEB_TOOLS = {'mcp__fetch__fetch', 'mcp__firecrawl__firecrawl_scrape', 'mcp__firecrawl__firecrawl_map'} | {'mcp__playwright-web__' + n for n in (
+    'browser_navigate', 'browser_navigate_back', 'browser_snapshot', 'browser_wait_for', 'browser_click', 'browser_press_key',
+    'browser_network_requests', 'browser_tabs', 'browser_handle_dialog', 'browser_close',
+)}
+WEB_AGENTS = {'web-scraper': WEB_TOOLS}
+WEB_DENIED = ('mcp__firecrawl__firecrawl_crawl', 'mcp__firecrawl__firecrawl_extract')
+WEB_MATCHER = 'mcp__(.*([Ff][Ii][Rr][Ee][Cc][Rr][Aa][Ww][Ll]|[Pp][Ll][Aa][Yy][Ww][Rr][Ii][Gg][Hh][Tt]-[Ww][Ee][Bb]).*|[Ff][Ee][Tt][Cc][Hh]__.*)'
 MODELS = {'haiku', 'sonnet', 'opus'}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 errors, warnings = [], []
@@ -119,10 +126,13 @@ for f in agents:
     for t in listed:
         if t in FIGMA_DENIED or t.startswith(FIGMA_DENIED_PREFIX):
             errors.append('%s: denied Figma tool %s' % (f, t))
+    web = {t for t in listed if t.startswith(('mcp__fetch__', 'mcp__playwright-web__', 'mcp__firecrawl__'))}
+    if web != WEB_AGENTS.get(f[:-3], set()):
+        errors.append('%s: web tools must be exactly %s' % (f, 'the web-scraper set' if f[:-3] in WEB_AGENTS else 'none (web-scraper only)'))
     if 'mcpServers' in d:
         errors.append('%s: mcpServers frontmatter is not allowed' % f)
     for t in listed:
-        if t in PLAYWRIGHT_ALLOWED or t in CONTEXT7_TOOLS or t in FIGMA_TOOLS or t == 'ReadMcpResourceTool':
+        if t in PLAYWRIGHT_ALLOWED or t in CONTEXT7_TOOLS or t in FIGMA_TOOLS or t in WEB_TOOLS or t == 'ReadMcpResourceTool':
             pass
         elif t in SERENA_TOOLS:
             if f[:-3] not in SERENA_AGENTS:
@@ -160,6 +170,14 @@ for f in agents:
             errors.append('%s: tools must be an explicit list without Edit, Write, NotebookEdit or MultiEdit' % f)
     elif registers_aws:
         errors.append('%s: aws-agent-bash.sh is only for aws-engineer' % f)
+    registers_scrape = any(h.get('command', '').endswith('/scrape-agent-write.sh') for ev in (d.get('hooks') or {}).values() for group in ev for h in group.get('hooks', []))
+    if f == 'web-scraper.md':
+        if not any(group.get('matcher') == 'Write' and any(h.get('command', '').endswith('/scrape-agent-write.sh') for h in group.get('hooks', [])) for group in (d.get('hooks') or {}).get('PreToolUse', [])):
+            errors.append('%s: frontmatter hooks must register scrape-agent-write.sh as a PreToolUse hook with matcher Write' % f)
+        if any(t in ('Read', 'Grep', 'Glob', 'Bash', 'Edit', 'MultiEdit', 'NotebookEdit') for t in listed):
+            errors.append('%s: tools must not include Read, Grep, Glob, Bash, Edit, MultiEdit or NotebookEdit' % f)
+    elif registers_scrape:
+        errors.append('%s: scrape-agent-write.sh is only for web-scraper' % f)
     if f != 'orchestrator.md' and 'Final report' not in body:
         errors.append('%s: no output contract' % f)
 
@@ -184,6 +202,15 @@ for sf in ('settings.managed.json', 'project/settings.project.json'):
         errors.append('%s: must not deny the whole playwright server' % sf)
     for t in sorted(PLAYWRIGHT_ALLOWED & set(deny)):
         errors.append('%s: denies allowed tool %s' % (sf, t))
+    if sf == 'settings.managed.json':
+        for n in PLAYWRIGHT_DENIED:
+            if 'mcp__playwright-web__' + n not in deny:
+                errors.append('%s: deny list lacks mcp__playwright-web__%s' % (sf, n))
+        for t in WEB_DENIED:
+            if t not in deny:
+                errors.append('%s: deny list lacks %s' % (sf, t))
+        for t in sorted(WEB_TOOLS & set(deny)):
+            errors.append('%s: denies allowed tool %s' % (sf, t))
     if 'mcp__serena' in deny or 'mcp__serena__*' in deny:
         errors.append('%s: must not deny the whole serena server' % sf)
     for t in sorted(SERENA_TOOLS & set(deny)):
@@ -201,6 +228,8 @@ if os.path.isfile(sp):
     for mt in (FIGMA_MATCHER, RESOURCE_MATCHER):
         if not any(g.get('matcher') == mt and any(h.get('command', '').endswith('/guard-mcp-figma.sh') for h in g.get('hooks', [])) for g in pre):
             errors.append('settings.managed.json: guard-mcp-figma.sh not registered with matcher ' + mt)
+    if not any(g.get('matcher') == WEB_MATCHER and any(h.get('command', '').endswith('/guard-mcp-web.sh') for h in g.get('hooks', [])) for g in pre):
+        errors.append('settings.managed.json: guard-mcp-web.sh not registered with matcher ' + WEB_MATCHER + ' (guard-mcp-playwright.sh relies on it for playwright-web)')
     aws_idx = [i for i, g in enumerate(pre) if g.get('matcher') == 'Bash' and any(h.get('command', '').endswith('/guard-aws.sh') for h in g.get('hooks', []))]
     if not aws_idx:
         errors.append('settings.managed.json: guard-aws.sh not registered with matcher Bash')
@@ -252,6 +281,15 @@ else:
     m = re.search(r'^case "\$\{TOOL#mcp__figma__\}" in\n\s*([a-z_|-]+)\) ;;', open(hp, encoding='utf-8').read(), re.M)
     if not m or {'mcp__figma__' + n for n in m.group(1).split('|')} != FIGMA_TOOLS:
         errors.append('hooks/guard-mcp-figma.sh: allowlist differs from FIGMA_TOOLS')
+hp = ROOT + '/hooks/guard-mcp-web.sh'
+if not os.path.isfile(hp):
+    errors.append('hooks/guard-mcp-web.sh missing')
+else:
+    m = re.search(r'^case "\$TOOL" in\n(.*?)^\s*\*\)', open(hp, encoding='utf-8').read(), re.M | re.S)
+    if not m or set(re.findall(r'mcp__[\w-]+', m.group(1))) != WEB_TOOLS:
+        errors.append('hooks/guard-mcp-web.sh: allowlist differs from WEB_TOOLS')
+if not os.path.isfile(ROOT + '/hooks/scrape-agent-write.sh'):
+    errors.append('hooks/scrape-agent-write.sh missing')
 
 skills = sorted(os.listdir(ROOT + '/skills'))
 for s in skills:
