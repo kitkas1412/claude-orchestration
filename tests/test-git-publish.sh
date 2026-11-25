@@ -589,7 +589,7 @@ out=$("$G" pr --expect-sha "$S" --expect-content "$CONTENT" --title-file "$T/tit
 grep -qxF "PUSH push --no-follow-tags --recurse-submodules=no -- git@github.com:acme/widget.git $S:refs/heads/feat/pr" "$T/push.log" && ok || bad "push argv: $(cat "$T/push.log")"
 grep -qF ' origin ' "$T/push.log" && bad "push still names the remote origin: $(cat "$T/push.log")" || ok
 # gh gets a private temp copy of the body, never the caller's file.
-want="[pr] [create] [--draft] [--repo] [acme/widget] [--base] [main] [--head] [feat/pr] [--title] [feat: add pr] [--body-file] [$T/tmp/git-publish."
+want="[pr] [create] [--repo] [acme/widget] [--base] [main] [--head] [feat/pr] [--title] [feat: add pr] [--body-file] [$T/tmp/git-publish."
 case "$(cat "$T/gh.log")" in
   "$want"??????"] ") ok ;;
   *) bad "gh argv: $(cat "$T/gh.log")" ;;
@@ -792,7 +792,7 @@ refused "pr at level push" "too low" "$K0" pr "${PRARGS[@]}"
 setrow "$GHURL" pr main; resetgh
 out=$("$K0" pr "${PRARGS[@]}" 2>&1 </dev/null); rc=$?
 [ "$rc" = 0 ] && ok || bad "pr at level pr without a terminal: rc=$rc out=$out"
-ghcalled '[pr] [create] [--draft] [--repo] [acme/widget] [--base] [main] [--head] [feat/widget]' && ok || bad "pr did not create a draft: $(cat "$MS/gh.log")"
+ghcalled '[pr] [create] [--repo] [acme/widget] [--base] [main] [--head] [feat/widget]' && ok || bad "pr did not create a ready PR: $(cat "$MS/gh.log")"
 [ -e "$T/pushed" ] && ok || bad "pr did not push"
 setrow "$GHURL" merge main; resetgh
 passes "pr at level merge" "$K0" pr "${PRARGS[@]}"
@@ -1368,7 +1368,7 @@ for mode in modify delete; do
     [ "$rc" = 0 ] && [ "${#CIC}" = 64 ] && ok || bad "plan ($CIT) with a ci row: rc=$rc out=$out"
     resetgh
     passes "pr allows ($CIT) with a ci row" "$K0" pr --expect-sha "$CIS" --expect-content "$CIC" "${PRFILES[@]}"
-    ghcalled '[pr] [create] [--draft]' && ok || bad "pr ($CIT) with a ci row did not create a draft: $(cat "$MS/gh.log")"
+    ghcalled '[pr] [create] [--repo]' && ! ghcalled '[--draft]' && ok || bad "pr ($CIT) with a ci row did not create a ready PR: $(cat "$MS/gh.log")"
   done
 done
 # A change added and removed again is caught commit by commit, never as a net-zero range.
@@ -1643,7 +1643,7 @@ fixtures() { # filter, runs pages, status pages
 DEFRUNS=$(rpage "$R_OK"); DEFSTAT=$(spage "$S_OK")
 CIURL=https://github.com/acme/widget/pull/7
 
-# pr: draft unless the level is merge, REST only.
+# pr: always ready (draft=false) at every level, REST only.
 GROW merge; cres
 out=$("${CLD[@]}" plan "${PRFILES[@]}" 2>&1 </dev/null); rc=$?
 CCS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
@@ -1664,7 +1664,7 @@ grep -qxF '[api] [repos/acme/widget/git/ref/heads/feat/widget] ' "$CLD_DIR/gh.lo
 apionly "cloud pr (merge)"
 GROW pr; cres
 out=$("${CLD[@]}" pr "${CPRARGS[@]}" 2>"$T/cl.err" </dev/null); rc=$?
-[ "$rc" = 0 ] && [ "$out" = "$CIURL" ] && grep -qF '[-F] [draft=true]' "$CLD_DIR/gh.log" && ok || bad "cloud pr at level pr must be a draft: rc=$rc out=$out log=$(cat "$CLD_DIR/gh.log")"
+[ "$rc" = 0 ] && [ "$out" = "$CIURL" ] && grep -qF '[-F] [draft=false]' "$CLD_DIR/gh.log" && ok || bad "cloud pr at level pr must be ready: rc=$rc out=$out log=$(cat "$CLD_DIR/gh.log")"
 apionly "cloud pr (pr)"
 GROW push; cres
 refused "cloud pr at level push" "too low" "${CLD[@]}" pr "${CPRARGS[@]}"
@@ -2225,7 +2225,7 @@ ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
 arun "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
 [ "$ARC" = 0 ] && ok || bad "account pr: rc=$ARC out=$AOUT"
 [ "$(sed -n 2p "$AD/gh.log")" = "[auth] [token] [--hostname] [github.com] [--user] [acctuser] " ] && ok || bad "pr gh call 2: $(cat "$AD/gh.log")"
-sed -n 4p "$AD/gh.log" | grep -qF '[pr] [create] [--draft] [--repo] [o/r] [--base] [main] [--head] [feat/pr1] [--title] [feat: add widget] [--body-file] [' && ok || bad "pr create argv: $(cat "$AD/gh.log")"
+sed -n 4p "$AD/gh.log" | grep -qF '[pr] [create] [--repo] [o/r] [--base] [main] [--head] [feat/pr1] [--title] [feat: add widget] [--body-file] [' && ok || bad "pr create argv: $(cat "$AD/gh.log")"
 [ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 4 ] && [ "$(sed -n 1,2p "$AD/gh.env" | sort -u)" = '<unset>' ] && [ "$(sed -n 3,4p "$AD/gh.env" | sort -u)" = "$ATOK" ] && ok || bad "pr gh env: $(cat "$AD/gh.env")"
 noleak "account pr" "$ATOK"
 nbranch feat/pr2; areset; touch "$AD/create.fail"
@@ -2250,7 +2250,7 @@ for cols in 6 5; do
   out=$("$A" plan "${PRFILES[@]}" 2>&1); ACS=$(printf '%s\n' "$out" | sed -n 's/^content sha256: //p')
   arun env GH_TOKEN=other "$A" pr --expect-sha "$AS" --expect-content "$ACS" "${PRFILES[@]}"
   [ "$ARC" = 0 ] && ok || bad "pr with $cols columns: rc=$ARC out=$AOUT"
-  [ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 1 ] && sed -n 1p "$AD/gh.log" | grep -qF '[pr] [create] [--draft] [--repo] [o/r]' && ok || bad "$cols columns: extra gh calls: $(cat "$AD/gh.log")"
+  [ "$(wc -l <"$AD/gh.log" | tr -d ' ')" = 1 ] && sed -n 1p "$AD/gh.log" | grep -qF '[pr] [create] [--repo] [o/r]' && ok || bad "$cols columns: extra gh calls: $(cat "$AD/gh.log")"
   [ "$(cat "$AD/gh.env")" = other ] && ok || bad "$cols columns: caller GH_TOKEN must pass through: $(cat "$AD/gh.env")"
   if grep -qE '^(GP_TOKEN|GIT_CONFIG_KEY_1[1-3])=' "$AD/git.env"; then bad "$cols columns: account credential config was set: $(cat "$AD/git.env")"; else ok; fi
   gitenv_all "$cols columns: config count" '^GIT_CONFIG_COUNT=11$'

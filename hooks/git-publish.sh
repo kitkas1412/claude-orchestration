@@ -1,5 +1,5 @@
 #!/bin/bash -p
-# Single validated route for pushing a branch, opening a draft PR and squash-merging it
+# Single validated route for pushing a branch, opening a PR (ready for review) and squash-merging it
 # in projects the user registered. Agents may run `status`, `plan`, `push`, `pr`, `merge` and `ci`,
 # each bounded by the registered level (commit < push < pr < merge). Only `enable` and
 # `disable` need a real terminal (require_tty is defense in depth).
@@ -1122,7 +1122,7 @@ cmd_pr() {
     cloud_pr_create
     return
   fi
-  gh_run pr create --draft --repo "$REPO_SLUG" --base "$R_DEFAULT" --head "$BRANCH" --title "$TITLE_VALUE" --body-file "$BODY_COPY" && return 0
+  gh_run pr create --repo "$REPO_SLUG" --base "$R_DEFAULT" --head "$BRANCH" --title "$TITLE_VALUE" --body-file "$BODY_COPY" && return 0
   rc=$?
   account_mode && die "gh could not create the pull request (account $R_ACCOUNT)"
   return "$rc"
@@ -1168,10 +1168,9 @@ PR_CI_SHAPE='length == 1 and (.[0] | type == "object"
   and ((.statusCheckRollup | type) == "array" or .statusCheckRollup == null))'
 
 # --- cloud-rest backend: REST equivalents of gh pr create/view/merge (GraphQL is blocked there) ---
-# A merge-level repo cannot mark a draft ready in the cloud, so its pull requests open as ready.
+# Pull requests always open as ready for review (never draft), at every level.
 cloud_pr_create() {
-  local draft=true resp url rest num bad="gh returned an unexpected pull request response"
-  [ "$R_LEVEL" = merge ] && draft=false
+  local draft=false resp url rest num bad="gh returned an unexpected pull request response"
   command -v jq >/dev/null 2>&1 || die "jq is not installed"
   resp=$(gh api --method POST "repos/$REPO_SLUG/pulls" -f title="$TITLE_VALUE" -f head="$BRANCH" -f base="$R_DEFAULT" \
     -F draft="$draft" -F body=@"$BODY_COPY" 2>/dev/null) || die "gh could not create the pull request"
@@ -1527,7 +1526,7 @@ cmd_merge() {
   report_text_secrets body "$BODY_COPY"
   stop_if_refused
 
-  # CI on a draft may not have run yet, so marking ready and merging are always separate, explicit runs.
+  # PRs opened by this script are ready; a draft (opened by hand) may not have CI yet, so marking ready and merging are always separate, explicit runs.
   draft=$(pr_field isDraft) || die "$bad"
   if [ "$OPT_MARK_READY" = 1 ]; then
     [ "$draft" = true ] || die "pull request is not a draft; --mark-ready-only applies to drafts only"
